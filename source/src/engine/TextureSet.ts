@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { GPU, RT, makeRT, quadShader } from './gpu';
 import { MeshBaker, BakeSettings, DEFAULT_BAKE } from './Baker';
 import { bakeHighToLow, HighBakeSettings, DEFAULT_HIGH, readFrames, FRAME_VERT, FRAME_FRAG } from './HighBaker';
-import { MeshParts, idColor } from './MeshParts';
+import { MeshParts, strHash, materialName, idColor } from './MeshParts';
 import { bakeThickness, downsample, ThicknessSettings, DEFAULT_THICK } from './Thickness';
 import { RayBaker, SAMPLE_FLOATS } from './RayBaker';
 import { DEFAULT_NAME_RULES, keyIds, wantsIgnoreBf, type NameRules } from './meshNames';
@@ -1271,9 +1271,10 @@ void main() { float v = texture2D(genTex, vUv).r; if (hasPaint) { vec4 pm = text
     }
   }
 
-  /** 'auto': separate objects if there are several, else connected parts, else UV islands. */
+  /** 'auto': one colour per material when there are several, else separate objects, else connected parts, else UV islands. */
   private resolveIdSource(geos: THREE.BufferGeometry[], parts: MeshParts): Exclude<IdSource, 'auto'> {
     if (this.idSource !== 'auto') return this.idSource;
+    if (parts.materialCount() > 1) return 'material';
     if (geos.length > 1) return 'object';
     const ids = parts.triIds('part', 0);
     for (let i = 1; i < ids.length; i++) if (ids[i] !== ids[0]) return 'part';
@@ -1373,9 +1374,13 @@ void main() { float v = texture2D(genTex, vUv).r; if (hasPaint) { vec4 pm = text
     const hp = this.highParts.parts;
     const src = this.resolveIdSource(high, hp);
     return {
-      tri: high.map((g, gi) => (src === 'vertex' && g.attributes.color ? null : hp.triIds(src === 'vertex' ? 'part' : src, gi))),
+      // Material colours come from the material's name, so the high poly's "Metal" matches the low poly's "Metal".
+      tri: high.map((g, gi) => (src === 'vertex' && g.attributes.color ? null : src === 'material'
+        ? hp.triIds('material', gi).map((m) => strHash(materialName(g, m)))
+        : hp.triIds(src === 'vertex' ? 'part' : src, gi))),
       vertexColor: src === 'vertex',
       color: idColor,
+      global: src === 'material',
     };
   }
 
@@ -1397,7 +1402,7 @@ void main() { float v = texture2D(genTex, vUv).r; if (hasPaint) { vec4 pm = text
       const n = (idx ? idx.count : g.attributes.position.count) / 3;
       const pos = new Float32Array(n * 9), uvs = new Float32Array(n * 6), col = new Float32Array(n * 9);
       for (let t = 0; t < n; t++) {
-        const c = ids ? idColor(gi * 7919 + ids[t]) : null;
+        const c = ids ? idColor(src === 'material' ? strHash(materialName(g, ids[t])) : gi * 7919 + ids[t]) : null;
         for (let k = 0; k < 3; k++) {
           const v = idx ? idx.getX(t * 3 + k) : t * 3 + k, o = t * 3 + k;
           uvs[o * 2] = uv.getX(v); uvs[o * 2 + 1] = uv.getY(v);

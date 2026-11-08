@@ -1,13 +1,25 @@
 import * as THREE from 'three';
 
 /** How the polygon-fill tool / material drops pick a region. */
-export type PartMode = 'tri' | 'island' | 'part' | 'object';
+export type PartMode = 'tri' | 'island' | 'part' | 'object' | 'material';
 export const PART_LABEL: Record<PartMode, string> = {
-  tri: 'Triangle', island: 'UV island', part: 'Mesh part', object: 'Object',
+  tri: 'Triangle', island: 'UV island', part: 'Mesh part', object: 'Object', material: 'Material',
 };
 
-/** A picked region: triangles of one geometry. */
-export interface Part { geo: number; tris: Uint32Array; key: string }
+/** A picked region: triangles of one geometry (`more`: the same region on other geometries, e.g. a shared material). */
+export interface Part { geo: number; tris: Uint32Array; key: string; more?: { geo: number; tris: Uint32Array }[] }
+
+/** Every geometry + triangle list a part covers. */
+export const partTris = (p: Part) => [{ geo: p.geo, tris: p.tris }, ...(p.more ?? [])];
+
+/** A stable number for a string (ID map colours by material name match between the low and high poly). */
+export function strHash(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0) % 1000003;
+}
+/** Material name of id `id` in geometry `g` (set by the model loader). */
+export const materialName = (g: THREE.BufferGeometry, id: number) => ((g.userData.materials as string[] | undefined)?.[id] ?? `Material ${id + 1}`);
 
 /** A distinct, stable color for an ID map region. */
 export function idColor(id: number): [number, number, number] {
@@ -81,6 +93,31 @@ export class MeshParts {
     return out;
   }
 
+  /** Material id of every triangle, across all geometries (cached). */
+  private matCache = new Map<number, Int32Array>();
+  private mat(gi: number) {
+    let a = this.matCache.get(gi);
+    if (!a) { a = this.triIds('material', gi); this.matCache.set(gi, a); }
+    return a;
+  }
+  /** Distinct materials used by the model. */
+  materialCount(): number {
+    const s = new Set<number>();
+    for (let gi = 0; gi < this.geos.length; gi++) for (const v of this.mat(gi)) s.add(v);
+    return s.size;
+  }
+  /** Every triangle on any geometry that uses one of `ids`. */
+  private materialPart(ids: Set<number>): Part | null {
+    const list: { geo: number; tris: Uint32Array }[] = [];
+    for (let gi = 0; gi < this.geos.length; gi++) {
+      const m = this.mat(gi), t: number[] = [];
+      for (let i = 0; i < m.length; i++) if (ids.has(m[i])) t.push(i);
+      if (t.length) list.push({ geo: gi, tris: Uint32Array.from(t) });
+    }
+    if (!list.length) return null;
+    return { ...list[0], more: list.slice(1), key: `material:${[...ids].sort((a, b) => a - b).join(',')}` };
+  }
+
   /** Triangles of geometry `gi` whose UV triangle contains `uv` (for clicks in the 2D view). */
   triAtUV(gi: number, u: number, v: number): number {
     const g = this.geos[gi];
@@ -101,6 +138,15 @@ export class MeshParts {
 
   /** Every region (in `mode`) touched by triangles that pass `test`, merged per geometry. */
   select(mode: PartMode, test: (gi: number, tri: number) => boolean): Part[] {
+    if (mode === 'material') {
+      const ids = new Set<number>();
+      for (let gi = 0; gi < this.geos.length; gi++) {
+        const m = this.mat(gi);
+        for (let t = 0; t < m.length; t++) if (!ids.has(m[t]) && test(gi, t)) ids.add(m[t]);
+      }
+      const p = ids.size ? this.materialPart(ids) : null;
+      return p ? [p] : [];
+    }
     const out: Part[] = [];
     for (let gi = 0; gi < this.geos.length; gi++) {
       const n = this.triCount(this.geos[gi]);
@@ -124,6 +170,7 @@ export class MeshParts {
     if (!g) return null;
     const n = this.triCount(g);
     if (mode === 'tri') return { geo, tris: new Uint32Array([tri]), key: `tri:${geo}:${tri}` };
+    if (mode === 'material') return this.materialPart(new Set([this.mat(geo)[tri] ?? 0]));
     if (mode === 'object') {
       const all = new Uint32Array(n);
       for (let i = 0; i < n; i++) all[i] = i;
@@ -149,6 +196,7 @@ export class MeshParts {
 
   /** One highlight geometry for several regions (any geometries); `uvSpace` lays it out flat in UV. */
   highlightMany(parts: Part[], uvSpace = false): THREE.BufferGeometry {
+    parts = parts.flatMap((p) => partTris(p).map((q) => ({ ...q, key: p.key })));
     let count = 0;
     for (const p of parts) count += p.tris.length * 3;
     const pos = new Float32Array(count * 3);

@@ -67,6 +67,11 @@ export const GUIDES: Guide[] = [
     sum: 'What LocalPaint can do in this version.',
     tags: ['new', 'update', 'version', 'changelog'], words: 'changes release notes added features latest',
     body: [
+      { h: 'New in v1.23', steps: [
+        'Importing an FBX (or GLB) now ignores the textures it points to and reads which material each part of the mesh uses, so no more missing-texture errors.',
+        'Models with several materials: the ID map gives each material its own colour (parts that share a material share the colour, on every mesh), and dropping an asset or using the polygon fill targets the material of the part you point at.',
+        'The polygon fill and Drop onto have a new Material mode for this. Pick another mode any time.',
+      ] },
       { h: 'New in v1.22', steps: [
         'The layer right-click menu is laid out like Substance Painter\'s: masks (white, black, bitmap, colour selection, smart masks), toggle / invert / clear mask, flatten, export mask or channels, cut / copy / paste, colour tags, copy / paste mask, blending options and the Add effect items.',
         'Content effects: Add filter, generator, levels or fill to a layer. They show as rows under it, each with its own blend mode and opacity, and turn on and off with the eye.',
@@ -174,14 +179,21 @@ export const GUIDES: Guide[] = [
   {
     id: 'open-model', title: 'New file / opening a model', cat: 'Basics',
     sum: 'Open an FBX, OBJ or GLB model, or start with a built in shape.',
-    tags: ['new', 'open', 'model', 'import'], words: 'fbx obj glb gltf mesh load file start blender roblox character uv',
+    tags: ['new', 'open', 'model', 'import'], words: 'fbx obj glb gltf mesh load file start blender roblox character uv material materials texture missing textures id map multiple materials',
     body: [
       { steps: [
         'Pick a model on the start screen, use File > Open model, or drag the model file into the 3D view.',
         'The New project window opens. Pick the project template (it sets the starting layers and the export template) and the document resolution.',
         'Leave "Bake mesh maps after importing" on and LocalPaint bakes AO, curvature and the other mesh maps as soon as the model is in.',
         'Under Advanced settings you can pick the normal map format (OpenGL or DirectX) and bring in mesh maps you already baked somewhere else.',
-        'The model needs UVs. Unwrap it in Blender or similar first. If it has several materials they share one texture set.',
+        'The model needs UVs. Unwrap it in Blender or similar first.',
+        'Textures the file points to are ignored: LocalPaint keeps the meshes, the UVs and which material each part uses.',
+      ] },
+      { h: 'Models with several materials', steps: [
+        'All the materials share one texture set (one set of textures), but LocalPaint still knows which part uses which material.',
+        'The ID map bakes one colour per material. Parts that share a material get the same colour, even on different meshes. Use Smart mask > ID color selection to put a material on one of them.',
+        'Drop onto is set to Material, so dragging an asset onto a part fills everything that uses that part\'s material. The polygon fill (P) has a Material mode too.',
+        'Give your materials names in Blender. Materials with the same name count as one, like in Substance.',
       ] },
       { tips: ['File > Export mesh saves the model back out as GLB (with your textures inside) or OBJ.'] },
     ],

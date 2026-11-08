@@ -21,6 +21,30 @@ export interface LoadedModel {
   source: ModelSource;
   /** How the model was centered/scaled into the unit sphere (a high poly reuses the low poly's). */
   xf: ModelXf;
+  /** Material names, indexed by the material id in each geometry's groups. */
+  materials?: string[];
+}
+
+/**
+ * Model files often point at texture files (or carry them inside). LocalPaint paints its own textures, so the loaders
+ * get a 1×1 stand-in for every texture: nothing is read from disk, no "texture not found" errors, and big embedded
+ * textures don't slow the import down. Only the meshes, UVs and which material each part uses are kept.
+ */
+const NO_TEX = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+function noTextureManager() {
+  const m = new THREE.LoadingManager();
+  m.setURLModifier(() => NO_TEX);
+  return m;
+}
+/** The material's identity for "same material": its name (like Substance's texture sets), or the object when unnamed. */
+function materialKey(mat: THREE.Material | undefined): string {
+  if (!mat) return '(no material)';
+  const n = (mat.name || '').trim();
+  return n || 'unnamed:' + mat.uuid;
+}
+function materialLabel(mat: THREE.Material | undefined, i: number): string {
+  const n = (mat?.name || '').trim();
+  return n || `Material ${i + 1}`;
 }
 export interface ModelXf { center: [number, number, number]; scale: number }
 export interface LoadOpts {
@@ -97,6 +121,15 @@ function fromObject(root: THREE.Object3D, name: string, flipV: boolean, source: 
   const geos: THREE.BufferGeometry[] = [];
   const warnings: string[] = [];
   let noUv = 0;
+  // One id per material across the whole file, so parts sharing a material share an id (and an ID map colour).
+  const matIds = new Map<string, number>();
+  const matNames: string[] = [];
+  const matId = (mat: THREE.Material | undefined) => {
+    const k = materialKey(mat);
+    let id = matIds.get(k);
+    if (id === undefined) { id = matNames.length; matIds.set(k, id); matNames.push(materialLabel(mat, id)); }
+    return id;
+  };
   root.traverse((o) => {
     const m = o as THREE.Mesh;
     if (!m.isMesh || !m.geometry?.attributes?.position) return;
@@ -114,15 +147,22 @@ function fromObject(root: THREE.Object3D, name: string, flipV: boolean, source: 
     if (g.index) ng.setIndex(new THREE.BufferAttribute(new Uint32Array(Array.from(g.index.array as ArrayLike<number>)), 1));
     // Vertex colors and material groups feed the ID map baker.
     if (g.attributes.color) ng.setAttribute('color', toFloat(g.attributes.color));
-    if (Array.isArray(m.material) && g.groups.length > 1) for (const gr of g.groups) ng.addGroup(gr.start, gr.count, gr.materialIndex);
+    // Material of every face (the material linked to that part of the mesh, never its textures).
+    const mats = Array.isArray(m.material) ? m.material : [m.material];
+    const total = g.index ? g.index.count : g.attributes.position.count;
+    if (Array.isArray(m.material) && g.groups.length) for (const gr of g.groups) ng.addGroup(gr.start, Math.min(gr.count, total - gr.start), matId(mats[gr.materialIndex ?? 0]));
+    else ng.addGroup(0, total, matId(mats[0]));
     ng.applyMatrix4(m.matrixWorld);
     if (!ng.attributes.normal) ng.computeVertexNormals();
     // The mesh name drives "bake by mesh name" (Helmet_low ↔ Helmet_high).
     ng.name = m.name || m.parent?.name || '';
+    ng.userData.materials = matNames;
     geos.push(ng);
   });
   if (noUv) warnings.push(`${noUv} mesh${noUv > 1 ? 'es have' : ' has'} no UVs and ${noUv > 1 ? 'were' : 'was'} skipped.`);
-  return finalize(geos, name, warnings, source, opts);
+  const model = finalize(geos, name, warnings, source, opts);
+  model.materials = matNames;
+  return model;
 }
 
 export async function parseModel(name: string, bytes: ArrayBuffer, opts: LoadOpts = {}): Promise<LoadedModel> {
@@ -130,11 +170,11 @@ export async function parseModel(name: string, bytes: ArrayBuffer, opts: LoadOpt
   const source: ModelSource = { kind: 'file', name, bytes };
   const base = name.replace(/\.[^.]+$/, '');
   if (ext === 'glb' || ext === 'gltf') {
-    const gltf: any = await new Promise((res, rej) => new GLTFLoader().parse(bytes, '', res, rej));
+    const gltf: any = await new Promise((res, rej) => new GLTFLoader(noTextureManager()).parse(bytes, '', res, rej));
     return fromObject(gltf.scene, base, true, source, opts);
   }
   if (ext === 'fbx') {
-    const root = new FBXLoader().parse(bytes, '');
+    const root = new FBXLoader(noTextureManager()).parse(bytes, '');
     return fromObject(root, base, false, source, opts);
   }
   if (ext === 'obj') {

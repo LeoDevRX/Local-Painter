@@ -18,7 +18,7 @@ import { GEN_LABEL, GEN_TYPES, GenType, defaultGen, Axis, SMART_MASKS, smartMask
 import { PATTERNS, PATTERN_LABEL, PatternType } from './engine/Procedural';
 import { GrungeLib } from './engine/GrungeLib';
 import { SP_DEFS, SP_KINDS, SpKind, SpParam, spDefaults, GRUNGE_CATS, GRUNGE_CAT_LABEL, parseGrungeRef } from './engine/PainterGen';
-import { MeshParts, PartMode, PART_LABEL, Part } from './engine/MeshParts';
+import { MeshParts, PartMode, PART_LABEL, Part, partTris, materialName } from './engine/MeshParts';
 import { MaterialPreset, PresetShelf, ShelfItem , isDesktopApp, openNativePresets , splitMapName, MapSlot } from './engine/Presets';
 import { imageTexture } from './engine/images';
 import { ThumbRenderer } from './engine/Thumbs';
@@ -367,6 +367,17 @@ class App {
     this.uv.setModel(model.geometries);
     this.checkUVOverlaps(model);
     this.parts = new MeshParts(model.geometries);
+    // A model made of several materials: dropping assets and the polygon fill target the material of the part you
+    // point at (like Substance, where each material is its own set), until you pick another mode.
+    const mats = this.parts.materialCount();
+    if (mats > 1) {
+      if (this.dropMode === 'whole') this.dropMode = 'material';
+      if (this.fillMode === 'island') this.fillMode = 'material';
+      setTimeout(() => toast(`${mats} materials found: dropping an asset on the model now fills the material of the part you drop it on. Change it under Drop onto.`), 900);
+    } else {
+      if (this.dropMode === 'material') this.dropMode = 'whole';
+      if (this.fillMode === 'material') this.fillMode = 'island';
+    }
     this.clearPath();
     this.lastEnd3 = null; this.lastEnd2 = null;
     this.uv.frame();
@@ -2069,8 +2080,8 @@ class App {
     const ts = this.ts;
     const layer = ts.activeLayer;
     if (!layer) { toast('Add a layer first', true); return; }
-    const tris = parts.map((p) => ({ geo: p.geo, tris: p.tris }));
-    const n = parts.reduce((a, p) => a + p.tris.length, 0);
+    const tris = parts.flatMap(partTris);
+    const n = tris.reduce((a, p) => a + p.tris.length, 0);
     if (layer.kind !== 'paint' || this.paintTarget === 'mask') {
       const added = !layer.mask;
       ts.batchSync(added ? 'Black mask + fill' : 'Fill mask', () => {
@@ -2365,14 +2376,17 @@ class App {
         if (part) {
           this.ts.addMask(layer, { base: 'black', gen: null });
           this.ts.activeId = layer.id;
-          this.ts.polyFill({ ...this.brush, erase: false }, 'mask', [{ geo: part.geo, tris: part.tris }]);
+          this.ts.polyFill({ ...this.brush, erase: false }, 'mask', partTris(part));
         }
       }
     });
     if (!added) return;
     if (part) {
       this.paintTarget = 'mask';
-      toast(`${usable.length > 1 ? usable.length + ' assets' : '“' + usable[0].name + '”'} applied to this ${PART_LABEL[this.dropMode as PartMode].toLowerCase()}. Paint the mask white/black to adjust.`);
+      const what = this.dropMode === 'material'
+        ? `material “${materialName(this.model.geometries[part.geo], +(part.key.split(':')[1] ?? 0))}”`
+        : `this ${PART_LABEL[this.dropMode as PartMode].toLowerCase()}`;
+      toast(`${usable.length > 1 ? usable.length + ' assets' : '“' + usable[0].name + '”'} applied to ${what}. Paint the mask white/black to adjust.`);
     } else toast(usable.length > 1 ? `Added ${added} assets` : `Added “${usable[0].name}”`);
     this.clearShelfPick();
     this.modified = true;
@@ -3333,7 +3347,7 @@ class App {
         el('button', { class: this.pickMode === 'color' ? 'on' : '', title: 'Copy only the base color', onclick: () => { this.pickMode = 'color'; this.buildToolbar(); } }, 'Color only')),
         el('span', { class: 'tb-note' }, 'Click the model (or the 2D view) to pick what\'s under the cursor into the brush. P switches to the picker and back.'));
     } else if (this.tool === 'fill') {
-      const modes: PartMode[] = ['tri', 'island', 'part', 'object'];
+      const modes: PartMode[] = ['tri', 'island', 'part', 'object', 'material'];
       host.append(el('div', { class: 'seg tb-seg' }, ...modes.map((m) => el('button', { class: this.fillMode === m ? 'on' : '', onclick: () => { this.fillMode = m; this.buildToolbar(); } }, PART_LABEL[m]))),
         el('span', { class: 'tb-note' }, this.paintTarget === 'mask' ? 'Fills the mask: click = white (show), with Eraser on = black.' : 'Fills the paint layer with the brush material. Select a mask to fill the mask instead.'));
       if (this.paintTarget === 'mask') host.append(el('span', { class: 'tb-chip' }, 'Filling MASK'));
@@ -3473,7 +3487,7 @@ class App {
       el('div', { class: 'chips' }, chip('all', 'All'), chip('model', 'Models'), chip('smart', 'Smart materials'), chip('cloud', 'Scanned'), chip('material', 'Materials'), chip('textures', 'Textures'), chip('mask', 'Smart masks'), chip('brush', 'Brushes'), chip('alpha', 'Alphas'), chip('graph', 'Graphs'), chip('env', 'Environments'), chip('unsupported', 'Substance')),
       el('div', { class: 'row drop-row', title: 'What dragging an asset onto the model fills' }, el('label', {}, 'Drop onto'),
         select<DropMode>([{ value: 'whole', label: 'Whole model' }, { value: 'object', label: 'Object (separate mesh)' },
-          { value: 'part', label: 'Mesh part' }, { value: 'island', label: 'UV island' }, { value: 'tri', label: 'Triangle' }],
+          { value: 'material', label: 'Material (of the part you drop on)' }, { value: 'part', label: 'Mesh part' }, { value: 'island', label: 'UV island' }, { value: 'tri', label: 'Triangle' }],
         this.dropMode, (v) => (this.dropMode = v))),
       (this.pickBar = el('div', { class: 'pick-bar' })),
       grid,
@@ -4665,7 +4679,7 @@ class App {
       return [group('ID',
         el('div', { class: 'row' }, el('label', {}, 'Color source'),
           select<IdSource>(srcs.map((k) => ({ value: k, label: ID_SOURCE_LABEL[k] })), srcs.includes(ts.idSource) ? ts.idSource : 'auto', (v) => { ts.idSource = v; this.buildBakeDock(); })),
-        el('p', { class: 'note' }, `Gives every ${ts.idSource === 'auto' ? 'object (or mesh part / UV island)' : ts.idSource === 'island' ? 'UV island' : ts.idSource === 'object' ? 'object' : ts.idSource === 'material' ? 'material' : ts.idSource === 'vertex' ? 'vertex color region' : 'separate mesh part'} its own flat color, ${fromHigh}. Then use Mask → Smart mask: ID color selection to put a material on one color. Optional: untick it if you don't need it.`),
+        el('p', { class: 'note' }, `Gives every ${ts.idSource === 'auto' ? 'material (or, with one material, object / mesh part / UV island)' : ts.idSource === 'island' ? 'UV island' : ts.idSource === 'object' ? 'object' : ts.idSource === 'material' ? 'material' : ts.idSource === 'vertex' ? 'vertex color region' : 'separate mesh part'} its own flat color, ${fromHigh}. Then use Mask → Smart mask: ID color selection to put a material on one color. Optional: untick it if you don't need it.`),
       )];
     }
     if (it === 'thick') {

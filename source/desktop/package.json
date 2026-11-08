@@ -1,7 +1,7 @@
 {
   "name": "localpaint",
   "productName": "LocalPaint",
-  "version": "1.0.22",
+  "version": "1.0.23",
   "description": "LocalPaint (owned by LeoDevRX)", "author": "LeoDevRX",
   "main": "main.js"
 }

@@ -177,7 +177,7 @@ function toTangent(T: THREE.Vector3, B: THREE.Vector3, N: THREE.Vector3, n: THRE
 export async function bakeHighToLow(
   gpu: GPU, low: THREE.BufferGeometry[], high: THREE.BufferGeometry[], size: number,
   s: HighBakeSettings, onProgress?: (f: number) => void, isCancelled?: () => boolean,
-  ids?: { tri: (Int32Array | null)[]; vertexColor: boolean; color: (id: number) => [number, number, number] },
+  ids?: { tri: (Int32Array | null)[]; vertexColor: boolean; color: (id: number) => [number, number, number]; global?: boolean },
   /** Match by mesh name: low mesh (index + 1) per texel, and the name group of every low / high mesh. */
   match?: { lowIdx: Float32Array; lowKey: number[]; highKey: number[] },
 ): Promise<HighBakeResult | null> {
@@ -274,7 +274,7 @@ export async function bakeHighToLow(
             }) as [number, number, number];
           } else {
             const t = ids.tri[gi];
-            c = ids.color(gi * 7919 + (t ? t[best.faceIndex] : 0));
+            c = ids.color((ids.global ? 0 : gi * 7919) + (t ? t[best.faceIndex] : 0));
           }
           id[o] = Math.round(Math.min(1, Math.max(0, c[0])) * 255);
           id[o + 1] = Math.round(Math.min(1, Math.max(0, c[1])) * 255);
