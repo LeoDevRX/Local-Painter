@@ -33,7 +33,7 @@ import {
   loadExportState, saveExportState, allTemplates, fileName, channelsOf, compose, nearestFill, pad, encodePNG, encodeTGA, encodeJPG,
 } from './engine/ExportTemplates';
 import {
-  LayerJSON, parseProject, restoreLayers, restoreLayer, serializeLayer, serializeProject, toB64, fromB64, makeSmartMaterial, applySmartMaterial, restoreMeshMaps,
+  LayerJSON, parseProject, restoreLayers, restoreLayer, serializeLayer, serializeProject, toB64, fromB64, makeSmartMaterial, applySmartMaterial, restoreMeshMaps, setData,
 } from './engine/Project';
 import { checkProjectFileName } from './engine/ProjectFormat';
 import { STARTER } from './starter';
@@ -343,41 +343,51 @@ class App {
     const hs = this.ts?.heightStrength;
     const highSettings = this.ts?.highSettings;
     const maps = this.ts?.bakeMaps ?? this.settings.bakeMaps;
-    this.ts?.dispose();
-    this.model = model;
     const res = resolution ?? this.ts?.size ?? 1024;
-    this.ts = new TextureSet(this.gpu, model.geometries, res);
-    this.ts.graphBaker = (g) => this.bakeGraph(g);
-    this.ts.scanResolver = (r) => this.scanImages(r);
-    this.ts.grungeResolver = (r) => this.grunges.resolve(r);
-    this.ts.onBakeStage = (k, st) => this.onBakeStage(k, st);
-    if (bake) this.ts.bakeSettings = { ...bake };
-    if (hs !== undefined) this.ts.heightStrength = hs;
-    if (highSettings) this.ts.highSettings = { ...highSettings };
-    if (maps) this.ts.bakeMaps = { ...this.ts.bakeMaps, ...maps };
+    for (const st of this.sets) st.ts.dispose();
+    if (this.ts && !this.sets.some((st) => st.ts === this.ts)) this.ts.dispose();
+    this.model = model;
+    // One texture set per material (like Substance): its own layers, textures, UV space and baked maps.
+    const setOf = model.setOf ?? model.geometries.map(() => 0);
+    const ids = [...new Set(setOf)].sort((a, b) => a - b);
+    this.sets = ids.map((id) => {
+      const geos = model.geometries.map((_, i) => i).filter((i) => setOf[i] === id);
+      const ts = new TextureSet(this.gpu, geos.map((i) => model.geometries[i]), res);
+      return { name: ids.length > 1 ? (model.materials?.[id] ?? `Material ${id + 1}`) : model.name, ts, geos, visible: true };
+    });
+    const first = this.sets[0].ts;
+    if (bake) first.bakeSettings = { ...bake };
+    if (highSettings) first.highSettings = { ...highSettings };
+    if (maps) first.bakeMaps = { ...first.bakeMaps, ...maps };
+    for (const st of this.sets) {
+      const ts = st.ts;
+      ts.graphBaker = (g) => this.bakeGraph(g);
+      ts.scanResolver = (r) => this.scanImages(r);
+      ts.grungeResolver = (r) => this.grunges.resolve(r);
+      ts.onBakeStage = (k, stage) => { if (this.ts === ts) this.onBakeStage(k, stage); };
+      if (hs !== undefined) ts.heightStrength = hs;
+      // Bake settings are shared by every texture set (one Baking panel for the model).
+      ts.bakeSettings = first.bakeSettings; ts.highSettings = first.highSettings; ts.bakeMaps = first.bakeMaps;
+      if (this.sets.length > 1) ts.occluders = model.geometries;
+      // Many engine changes can happen in one go (e.g. translating a smart material): rebuild the UI once per frame.
+      ts.onChange = () => {
+        if (this.ts !== ts) { this.poke(); return; }
+        if (this.refreshQueued) return;
+        this.refreshQueued = true;
+        requestAnimationFrame(() => { this.refreshQueued = false; this.refresh(); });
+      };
+    }
+    this.activeSet = 0;
+    this.ts = first;
     this.high = null;
     this.mapThumbs.clear();
-    // Many engine changes can happen in one go (e.g. translating a smart material): rebuild the UI once per frame.
-    this.ts.onChange = () => {
-      if (this.refreshQueued) return;
-      this.refreshQueued = true;
-      requestAnimationFrame(() => { this.refreshQueued = false; this.refresh(); });
-    };
-    this.vp.setModel(model.geometries);
-    this.uv.setModel(model.geometries);
+    this.vp.setModel(model.geometries, model.geometries.map((_, i) => this.sets.findIndex((st) => st.geos.includes(i))));
+    this.uv.setModel(this.ts.geometries);
     this.checkUVOverlaps(model);
-    this.parts = new MeshParts(model.geometries);
-    // A model made of several materials: dropping assets and the polygon fill target the material of the part you
-    // point at (like Substance, where each material is its own set), until you pick another mode.
-    const mats = this.parts.materialCount();
-    if (mats > 1) {
-      if (this.dropMode === 'whole') this.dropMode = 'material';
-      if (this.fillMode === 'island') this.fillMode = 'material';
-      setTimeout(() => toast(`${mats} materials found: dropping an asset on the model now fills the material of the part you drop it on. Change it under Drop onto.`), 900);
-    } else {
-      if (this.dropMode === 'material') this.dropMode = 'whole';
-      if (this.fillMode === 'material') this.fillMode = 'island';
-    }
+    this.parts = new MeshParts(this.ts.geometries);
+    if (this.dropMode === 'material') this.dropMode = 'whole';
+    if (this.fillMode === 'material') this.fillMode = 'island';
+    if (this.sets.length > 1) setTimeout(() => toast(`${this.sets.length} materials found, so ${this.sets.length} texture sets: pick one in the Texture Set List (top right) to paint it. Each has its own layers and textures.`), 900);
     this.clearPath();
     this.lastEnd3 = null; this.lastEnd2 = null;
     this.uv.frame();
@@ -395,18 +405,20 @@ class App {
   uvOverlap: UVOverlap | null = null;
   showOverlap = false;
   /** Find overlapping UVs (right after loading, without holding up the load) and mark them dark in 2D and on the model. */
+  /** Overlap check of the active texture set (each set has its own UV space). */
   private checkUVOverlaps(model: LoadedModel) {
     this.uvOverlap = null;
     this.uv.setOverlap(null);
     this.vp.setOverlap(null, false);
+    const ts = this.ts, geos = ts.geometries;
     setTimeout(() => {
-      if (this.model !== model) return;
+      if (this.model !== model || this.ts !== ts) return;
       let o: UVOverlap;
-      try { o = findUVOverlaps(model.geometries, this.settings.lowPerf ? 256 : 512); } catch (e) { console.warn('uv overlap', e); return; }
+      try { o = findUVOverlaps(geos, this.settings.lowPerf ? 256 : 512); } catch (e) { console.warn('uv overlap', e); return; }
       this.uvOverlap = o;
       if (o.tris) {
         this.uv.setOverlap(overlapTexture(o));
-        this.vp.setOverlap(overlapMesh(model.geometries, o), this.showOverlap);
+        this.vp.setOverlap(overlapMesh(geos, o), this.showOverlap);
         this.uv.setOverlapVisible(this.showOverlap);
         if (model.source.kind !== 'builtin') toast(`This model has ${o.areas} overlapping UV area${o.areas === 1 ? '' : 's'} (${o.tris} triangles). Painting there also paints the other spot. Press O to see them as dark spots, then fix them in Blender.`, true);
       }
@@ -424,12 +436,15 @@ class App {
     this.poke();
   }
 
+  /** Starting layers for every texture set. */
   newDefaultLayers() {
-    this.ts.addFillLayer('Base material', {
-      color: [0.62, 0.62, 0.62], rough: 0.45, metal: 0, height: 0.5,
-    }, { color: true, rough: true, metal: true, height: true }, false);
-    this.ts.addPaintLayer('Layer 1');
-    this.ts.clearHistory();
+    for (const ts of this.sets.length ? this.sets.map((st) => st.ts) : [this.ts]) {
+      ts.addFillLayer('Base material', {
+        color: [0.62, 0.62, 0.62], rough: 0.45, metal: 0, height: 0.5,
+      }, { color: true, rough: true, metal: true, height: true }, false);
+      ts.addPaintLayer('Layer 1');
+      ts.clearHistory();
+    }
     this.sel.clear();
   }
 
@@ -510,7 +525,7 @@ class App {
       toast(`Loading ${mesh!.name}…`);
       const m = await parseModel(mesh!.name, await mesh!.arrayBuffer());
       this.setModel(m, res);
-      if (np.template === 'empty') { this.ts.addPaintLayer('Layer 1'); this.ts.clearHistory(); this.sel.clear(); }
+      if (np.template === 'empty') { for (const st of this.sets) { st.ts.addPaintLayer('Layer 1'); st.ts.clearHistory(); } this.sel.clear(); }
       else this.newDefaultLayers();
       this.normalFormat = np.normal;
       this.exportPreset = TEMPLATES.find(([v]) => v === np.template)?.[2] ?? 'pbr-gl';
@@ -526,7 +541,7 @@ class App {
       if (baked.length) { this.applyViews(); this.updateBakeStatus(); this.sbsMeshStamp++; }
       this.buildAll();
       toast(`Loaded ${mesh!.name}`);
-      const missing = (['ao', 'curv', 'wsn', 'pos'] as BakeKey[]).filter((k) => !this.ts.baked.has(k));
+      const missing = (['ao', 'curv', 'wsn', 'pos'] as BakeKey[]).filter((k) => this.sets.some((st) => !st.ts.baked.has(k)));
       if (np.autoBake && missing.length) setTimeout(() => void this.startBake(), 300);
     } catch (e: any) {
       console.error(e);
@@ -632,7 +647,7 @@ class App {
     if (this.ts.painting || this.ts.baking || this.pathLiveOn) return;
     this.autosaving = true;
     try {
-      const blob = await serializeProject(this.ts, this.model.name || this.projectName(), this.model.source, this.projectSettings());
+      const blob = await serializeProject(this.projectSets(), this.model.name || this.projectName(), this.model.source, this.projectSettings(), this.activeSet);
       await this.native.autosaveWrite(this.projectName(), await blob.arrayBuffer(), this.snapshotThumb(), this.projectPath, st.autosaveKeep);
       this.lastAutosave = Date.now();
       this.flashStatus('Autosaved ✓');
@@ -1220,7 +1235,7 @@ class App {
     const name = this.projectName();
     const native = (window as any).texpaintNative;
     try {
-      const blob = await serializeProject(this.ts, this.model.name || name, this.model.source, this.projectSettings());
+      const blob = await serializeProject(this.projectSets(), this.model.name || name, this.model.source, this.projectSettings(), this.activeSet);
       if (native?.saveProject) {
         const p = await native.saveProject(name, await blob.arrayBuffer(), this.projectPath || null, saveAs);
         if (!p) return;
@@ -1307,8 +1322,18 @@ class App {
     if (this.ts && typeof s.heightStrength === 'number') this.ts.heightStrength = s.heightStrength;
     else if (this.ts && typeof s.normalStrength === 'number') this.ts.heightStrength = s.normalStrength;
     this.setModel(model, f.resolution, !!f.meshMaps);
-    await restoreLayers(this.ts, f);
-    if (await restoreMeshMaps(this.ts, f)) { this.applyViews(); this.updateBakeStatus(); }
+    // Every texture set gets its own layers and baked maps back (older projects: the first set only).
+    let maps = false;
+    for (let i = 0; i < this.sets.length; i++) {
+      const st = this.sets[i];
+      const d = setData(f, st.name, i);
+      if (!d) continue;
+      if (d.resolution !== st.ts.size) st.ts.setResolution(d.resolution);
+      await restoreLayers(st.ts, d);
+      if (await restoreMeshMaps(st.ts, d)) maps = true;
+    }
+    if (this.sets.length > 1 && f.activeSet && this.sets[f.activeSet]) this.switchSet(f.activeSet);
+    if (maps) { this.bindTextures(); this.updateBakeStatus(); }
     if (s.brush) {
       Object.assign(this.brush, s.brush);
       if (s.brushTipPng && this.brush.tip) {
@@ -1374,7 +1399,8 @@ class App {
   }
 
   bindTextures() {
-    this.vp.bindTextures(this.ts);
+    if (this.sets.length) this.sets.forEach((st, i) => this.vp.bindTextures(st.ts, i));
+    else this.vp.bindTextures(this.ts);
     this.applyViews();
     this.updateMirrorLines?.();
   }
@@ -1429,7 +1455,27 @@ class App {
   // ================================================================ baking
 
   /** Bake in the background; generators update when it finishes. */
+  /** Bake every texture set (one after the other), or just the model's only one. */
   async startBake() {
+    if (this.sets.length <= 1) { await this.startBakeOne(); return; }
+    if (this.bakingAll) return;
+    const back = this.activeSet;
+    this.bakingAll = true;
+    try {
+      for (let i = 0; i < this.sets.length; i++) {
+        this.switchSet(i);
+        toast(`Baking texture set ${i + 1} of ${this.sets.length}: ${this.sets[i].name}`);
+        if (!(await this.startBakeOne())) break;
+      }
+    } finally {
+      this.bakingAll = false;
+      this.switchSet(back);
+      this.bindTextures();
+    }
+  }
+  private bakingAll = false;
+
+  private async startBakeOne(): Promise<boolean> {
     const ts = this.ts;
     ts.highGeometries = this.useHigh ? (this.high?.geometries ?? null) : null;
     if (ts.highGeometries) ts.highName = this.high!.name;
@@ -1443,7 +1489,7 @@ class App {
     this.renderBakeRun();
     if (this.mode === 'bake') { this.bakeLabel.textContent = 'Baking…'; this.bakeLabel.classList.add('on'); }
     const ok = await run;
-    if (this.ts !== ts || ts.baking) return;
+    if (this.ts !== ts || ts.baking) return false;
     this.bakeProgress = -1;
     this.updateBakeStatus();
     this.bakeLabel.textContent = ok ? 'All maps baked ✓' : 'Bake stopped';
@@ -1460,6 +1506,7 @@ class App {
     }
     if (this.mode === 'bake') this.buildBakeDock();
     this.buildRight();
+    return ok;
   }
 
   /** A map started / finished baking: update the list, and show the finished map on the model. */
@@ -1586,8 +1633,7 @@ class App {
 
   // ================================================================ views
 
-  private viewSource(v: ViewMode): ViewSource | null {
-    const ts = this.ts;
+  private viewSource(v: ViewMode, ts: TextureSet = this.ts): ViewSource | null {
     switch (v) {
       case 'material': return null;
       case 'color': case 'emit': return { tex: ts.final[v].texture, mode: 0 };
@@ -1611,7 +1657,7 @@ class App {
 
   applyViews() {
     if (!this.ts) return;
-    this.vp.setView(this.view3, this.viewSource(this.view3));
+    this.vp.setView(this.view3, (k) => this.viewSource(this.view3, this.sets[k]?.ts ?? this.ts));
     this.uv.bind(this.viewSource(this.view2) ?? { tex: this.ts.final.color.texture, mode: 0 }, this.ts.posRT.texture);
     this.buildPaneSelects();
   }
@@ -1905,11 +1951,11 @@ class App {
       if (e.button === 0 && !e.altKey) {
         controls.enabled = false;
         try { canvas.setPointerCapture(e.pointerId); } catch { /* not an active pointer */ }
-        if (this.idPick >= 0) { const h = this.vp.pick(e.clientX, e.clientY); if (h?.uv) this.pickIdColor(h.uv); else toast('Click on the model to pick an ID color', true); return; }
+        if (this.idPick >= 0) { const h = this.pick(e.clientX, e.clientY); if (h?.uv) this.pickIdColor(h.uv); else toast('Click on the model to pick an ID color', true); return; }
         if (this.tool === 'fill' && this.mode === 'paint') { this.startBox('3d', e.clientX, e.clientY); return; }
         if (this.tool === 'path') { if (!this.pathDown3(e.clientX, e.clientY, e.ctrlKey || e.metaKey)) { controls.enabled = true; } return; }
         if (this.tool === 'clone' && this.vHeld) {
-          const h = this.vp.pick(e.clientX, e.clientY);
+          const h = this.pick(e.clientX, e.clientY);
           if (h?.uv) { this.ts.setCloneSource(h.uv); toast('Clone source set. Now paint where you want the copy.'); this.buildProperties(); }
           controls.enabled = true;
           return;
@@ -1937,7 +1983,7 @@ class App {
       if (this.shapeDragging) { this.moveShapeTo(e.clientX, e.clientY); return; }
       if (this.box?.pane === '3d') { this.moveBox(e.clientX, e.clientY); return; }
       if (this.pathDrag) { this.pathMove3(e.clientX, e.clientY); return; }
-      if (this.tool === 'picker') this.updatePickPreview(e.clientX, e.clientY, this.vp.pick(e.clientX, e.clientY)?.uv);
+      if (this.tool === 'picker') this.updatePickPreview(e.clientX, e.clientY, this.pick(e.clientX, e.clientY)?.uv);
       if (this.stroke) {
         const co = (e as any).getCoalescedEvents?.() as PointerEvent[] | undefined; const evs = co?.length ? co : [e];
         for (const ce of evs) {
@@ -1962,7 +2008,14 @@ class App {
       this.lazyEnd();
       controls.enabled = true;
     };
-    canvas.addEventListener('dblclick', () => { if (this.tool === 'path') this.finishPath(); });
+    canvas.addEventListener('dblclick', (e) => {
+      if (this.tool === 'path') { this.finishPath(); return; }
+      // Double-click a part of another texture set to switch to it.
+      if (this.sets.length > 1 && this.mode === 'paint') {
+        const k = this.setAt(e.clientX, e.clientY);
+        if (k >= 0 && k !== this.activeSet) { this.switchSet(k); toast(`Texture set: ${this.sets[k].name}`); }
+      }
+    });
     canvas.addEventListener('pointerup', end);
     canvas.addEventListener('pointercancel', end);
     canvas.addEventListener('pointerleave', () => { this.hover = null; this.pickPreview.style.display = 'none'; });
@@ -1992,7 +2045,7 @@ class App {
       const fl = [...(e.dataTransfer?.files ?? [])];
       // One plain image dropped on the model: project it there (like Substance). Map sets still get the import dialog.
       if (fl.length === 1 && /\.(png|jpe?g|webp|bmp|tga|tiff?)$/i.test(fl[0].name) && !splitMapName(fl[0].name.replace(/\.[^.]+$/, ''))
-        && this.mode === 'paint' && this.vp.pick(e.clientX, e.clientY)) { await this.projectImage(fl[0], e.clientX, e.clientY); return; }
+        && this.mode === 'paint' && this.pick(e.clientX, e.clientY)) { await this.projectImage(fl[0], e.clientX, e.clientY); return; }
       await this.dropFiles(fl);
     });
     // Files dropped anywhere else (Assets, Layers, menus…) are handled too, instead of the
@@ -2026,7 +2079,7 @@ class App {
   }
 
   startStroke(x: number, y: number, shift = false) {
-    const hit = this.vp.pick(x, y);
+    const hit = this.pick(x, y);
     if (!hit) return;
     this.ts.viewPos.copy(this.vp.camera.position);
     if (this.tool === 'picker') { if (hit.uv) this.pickAt(hit.uv); return; }
@@ -2036,7 +2089,7 @@ class App {
     if (shift && this.lastEnd3) {
       // Shift+click: straight line from where the last stroke ended.
       const s = this.toScreen(this.lastEnd3);
-      const start = s ? this.vp.pick(s.x, s.y) : null;
+      const start = s ? this.pick(s.x, s.y) : null;
       if (start) {
         this.ts.stamp(start.point, start.normal, start.uv);
         this.stroke = { hit: start, x: s!.x, y: s!.y };
@@ -2056,6 +2109,60 @@ class App {
     if (v.z > 1) return null;
     const r = this.vp.canvas.getBoundingClientRect(), g = this.vp.region;
     return { x: r.left + g.x + (v.x * 0.5 + 0.5) * g.w, y: r.top + g.y + (-v.y * 0.5 + 0.5) * g.h };
+  }
+
+  // ================================================================ texture sets (one per material)
+
+  private projectSets() { return this.sets.length ? this.sets.map((st) => ({ name: st.name, ts: st.ts })) : [{ name: this.model.name, ts: this.ts }]; }
+
+  /** Every texture set of the model; `this.ts` is the active one. */
+  sets: { name: string; ts: TextureSet; geos: number[]; visible: boolean }[] = [];
+  activeSet = 0;
+
+  /**
+   * Ray pick for painting: only the active texture set can be painted (other sets still block the ray, like in
+   * Substance). `mesh` comes back as the index in the active set.
+   */
+  pick(x: number, y: number): Hit | null {
+    const h = this.vp.pick(x, y);
+    if (!h || this.sets.length <= 1 || h.mesh === undefined || h.mesh < 0) return h;
+    const local = this.sets[this.activeSet].geos.indexOf(h.mesh);
+    return local < 0 ? null : { ...h, mesh: local };
+  }
+
+  /** Texture set under the cursor (any set). */
+  private setAt(x: number, y: number): number {
+    const h = this.vp.pick(x, y);
+    return h && h.mesh !== undefined && h.mesh >= 0 ? this.vp.setOfMesh(h.mesh) : -1;
+  }
+
+  /** Make another texture set the one you paint and see in the Layers panel. */
+  switchSet(i: number) {
+    if (i === this.activeSet || !this.sets[i]) return;
+    this.shapeMove = null; document.body.classList.remove('moving-shape'); this.showGizmo?.(false); this.closeProjGizmo?.();
+    this.clearPath();
+    this.activeSet = i;
+    this.ts = this.sets[i].ts;
+    this.fxSel = 0; this.sel = new Set(); this.paintTarget = 'content';
+    this.lastEnd3 = null; this.lastEnd2 = null;
+    this.uv.setModel(this.ts.geometries);
+    this.uv.frame();
+    this.parts = new MeshParts(this.ts.geometries);
+    this.checkUVOverlaps(this.model);
+    this.mapThumbs.clear();
+    this.applyViews();
+    this.buildAll();
+    this.updateBakeStatus();
+    this.updateTitle?.();
+  }
+
+  private toggleSetVisible(i: number) {
+    const st = this.sets[i];
+    if (!st) return;
+    st.visible = !st.visible;
+    this.vp.setSetVisible(i, st.visible);
+    this.buildRight();
+    this.poke();
   }
 
   // ================================================================ polygon fill + drop on mesh
@@ -2173,7 +2280,7 @@ class App {
   /** Which low poly meshes find a high poly mesh with the same name (shown under "Matching by mesh name"). */
   private nameMatchInfo(): HTMLElement | null {
     const bs = this.ts.bakeSettings;
-    const low = this.model.geometries.map((g) => g.name);
+    const low = this.ts.geometries.map((g) => g.name);
     if (low.length < 2 && !this.high) return el('p', { class: 'note' }, 'This model is a single mesh, so matching by name changes nothing.');
     const rules = { low: bs.lowSuffix ?? '_low', high: bs.highSuffix ?? '_high', ignoreBf: bs.bfSuffix ?? '_ignorebf' };
     const show = (n: string) => n || '(no name)';
@@ -2258,7 +2365,7 @@ class App {
 
   /** Regions touched by the box: in 3D, front-facing triangles whose centre is inside it; in 2D, triangles with a corner or centre inside. */
   private boxParts(b: NonNullable<App['box']>): Part[] {
-    const geos = this.model.geometries;
+    const geos = this.ts.geometries;
     if (b.pane === '2d') {
       const r = this.vp.canvas.getBoundingClientRect();
       const a = this.uv.toUV(b.x0, b.y0, r), c = this.uv.toUV(b.x1, b.y1, r);
@@ -2319,13 +2426,13 @@ class App {
     }
     this.showSelection([]);
     // A click: fill the region under the cursor.
-    if (b.pane === '3d') { const hit = this.vp.pick(b.x0, b.y0); if (hit) { const part = this.partAt(hit, this.fillMode); if (part) this.fillParts([part], erase); } return; }
+    if (b.pane === '3d') { const hit = this.pick(b.x0, b.y0); if (hit) { const part = this.partAt(hit, this.fillMode); if (part) this.fillParts([part], erase); } return; }
     const part = this.partAtUV(this.uv.toUV(b.x0, b.y0, this.vp.canvas.getBoundingClientRect()));
     if (part) this.fillParts([part], erase);
   }
 
   private partAtUV(uv: THREE.Vector2): Part | null {
-    for (let gi = 0; gi < this.model.geometries.length; gi++) {
+    for (let gi = 0; gi < this.ts.geometries.length; gi++) {
       const t = this.parts.triAtUV(gi, uv.x, uv.y);
       if (t >= 0) return this.parts.pick(this.fillMode, gi, t);
     }
@@ -2350,7 +2457,7 @@ class App {
   }
 
   private hoverDropTarget(x: number, y: number) {
-    const part = this.dropMode === 'whole' ? null : this.partAt(this.vp.pick(x, y), this.dropMode);
+    const part = this.dropMode === 'whole' ? null : this.partAt(this.pick(x, y), this.dropMode);
     if (part) this.vp.setHighlight(part.key, () => this.parts.highlightGeometry(part));
     else this.vp.setHighlight('', null);
   }
@@ -2364,7 +2471,7 @@ class App {
     if (this.mode === 'bake') this.setMode('paint');
     const usable = items.filter((it) => it.kind !== 'unsupported' && it.kind !== 'brush' && it.kind !== 'alpha' && it.kind !== 'mask' && it.kind !== 'env' && it.kind !== 'model');
     if (!usable.length) { if (items[0]) this.applyShelfItem(items[0]); return; }
-    const hit = this.vp.pick(x, y);
+    const hit = this.pick(x, y);
     const part = this.dropMode === 'whole' ? null : this.partAt(hit, this.dropMode);
     const label = usable.length > 1 ? `Drop ${usable.length} assets` : `Drop “${usable[0].name}”`;
     let added = 0;
@@ -2384,7 +2491,7 @@ class App {
     if (part) {
       this.paintTarget = 'mask';
       const what = this.dropMode === 'material'
-        ? `material “${materialName(this.model.geometries[part.geo], +(part.key.split(':')[1] ?? 0))}”`
+        ? `material “${materialName(this.ts.geometries[part.geo], +(part.key.split(':')[1] ?? 0))}”`
         : `this ${PART_LABEL[this.dropMode as PartMode].toLowerCase()}`;
       toast(`${usable.length > 1 ? usable.length + ' assets' : '“' + usable[0].name + '”'} applied to ${what}. Paint the mask white/black to adjust.`);
     } else toast(usable.length > 1 ? `Added ${added} assets` : `Added “${usable[0].name}”`);
@@ -2656,7 +2763,7 @@ class App {
       this.updatePathOverlay();
       return true;
     }
-    const hit = this.vp.pick(x, y);
+    const hit = this.pick(x, y);
     if (!hit) return false;
     this.addPathPoint3(hit);
     this.pathDrag = { kind: 'new', idx: this.path.p3.length - 1, x, y, moved: false };
@@ -2671,7 +2778,7 @@ class App {
     const pt = this.path.p3[d.idx];
     if (!pt) return;
     if (d.kind === 'point') {
-      const hit = this.vp.pick(x, y);
+      const hit = this.pick(x, y);
       if (hit) { pt.p.copy(hit.point); pt.n.copy(hit.normal); }
     } else {
       // Handles live in the surface's tangent plane at the point.
@@ -2722,7 +2829,7 @@ class App {
     const st = this.stroke;
     if (!st) return;
     this.ts.viewPos.copy(this.vp.camera.position);
-    const hit = this.vp.pick(x, y);
+    const hit = this.pick(x, y);
     if (!hit) { st.x = x; st.y = y; return; }
     const step = Math.max(this.brush.spacing * this.brush.radius, 1e-4);
     const dist = hit.point.distanceTo(st.hit.point);
@@ -2731,7 +2838,7 @@ class App {
     let last: Hit | null = null;
     for (let i = 1; i <= n; i++) {
       const t = i / n;
-      const h = i === n ? hit : this.vp.pick(st.x + (x - st.x) * t, st.y + (y - st.y) * t);
+      const h = i === n ? hit : this.pick(st.x + (x - st.x) * t, st.y + (y - st.y) * t);
       if (h) { this.ts.stamp(h.point, h.normal, h.uv); last = h; }
     }
     if (last) { st.hit = last; st.x = x; st.y = y; }
@@ -2838,7 +2945,7 @@ class App {
     this.ts.compositeDirty();
     let hit: Hit | null = null;
     if (this.hover && this.mode === 'paint' && !(this.vp.controls.enabled && this.isDraggingCamera())) {
-      hit = this.vp.pick(this.hover.x, this.hover.y);
+      hit = this.pick(this.hover.x, this.hover.y);
     }
     const brushCursor = BRUSH_TOOLS.includes(this.tool);
     this.vp.showCursor(brushCursor || this.tool === 'path' ? hit : null, this.tool === 'path' ? this.brush.radius * 0.5 : this.brush.radius);
@@ -4675,7 +4782,7 @@ class App {
     }
     if (it === 'id') {
       const srcs = (Object.keys(ID_SOURCE_LABEL) as IdSource[]).filter((k) =>
-        k !== 'vertex' || (this.high && this.useHigh ? this.high.geometries : this.model.geometries).some((g) => g.attributes.color));
+        k !== 'vertex' || (this.high && this.useHigh ? this.high.geometries : this.ts.geometries).some((g) => g.attributes.color));
       return [group('ID',
         el('div', { class: 'row' }, el('label', {}, 'Color source'),
           select<IdSource>(srcs.map((k) => ({ value: k, label: ID_SOURCE_LABEL[k] })), srcs.includes(ts.idSource) ? ts.idSource : 'auto', (v) => { ts.idSource = v; this.buildBakeDock(); })),
@@ -4747,11 +4854,18 @@ class App {
     const host = document.getElementById('right')!;
     host.innerHTML = '';
     const ts = this.ts;
-    const tsList = dock(el('span', {}, 'Texture set list'),
-      el('div', { class: 'dock-body tight' },
-        el('div', { class: 'ts-row on' }, el('span', { class: 'ts-eye' }), el('span', { class: 'name' }, this.model.name),
-          el('span', { class: 'muted' }, `${ts.size}×${ts.size}`), el('span', { class: 'muted' }, 'PBR metal/rough'))), 'ts-list');
-    (tsList.querySelector('.ts-eye') as HTMLElement).innerHTML = I.eye;
+    const sets = this.sets.length ? this.sets : [{ name: this.model.name, ts, geos: [], visible: true }];
+    const rows = sets.map((st, i) => {
+      const eye = el('button', { class: 'ts-eye', title: st.visible ? 'Hide this texture set on the model' : 'Show this texture set', onclick: (e: Event) => { e.stopPropagation(); this.toggleSetVisible(i); } });
+      eye.innerHTML = st.visible ? I.eye : I.eyeOff;
+      return el('div', {
+        class: 'ts-row' + (i === this.activeSet ? ' on' : '') + (st.visible ? '' : ' hidden'),
+        title: sets.length > 1 ? 'Click to paint this texture set (its own layers and textures). Double-click a part of the model to jump to its set.' : '',
+        onclick: () => this.switchSet(i),
+      }, eye, el('span', { class: 'name' }, st.name), el('span', { class: 'muted' }, `${st.ts.size}×${st.ts.size}`), el('span', { class: 'muted' }, 'PBR metal/rough'));
+    });
+    const tsList = dock(el('span', {}, sets.length > 1 ? `Texture set list (${sets.length})` : 'Texture set list'),
+      el('div', { class: 'dock-body tight ts-rows' }, ...rows), 'ts-list');
     if (this.mode === 'bake') {
       host.append(tsList, dock(el('span', {}, 'Baked mesh maps'), el('div', { class: 'dock-body' }, this.mapGrid(),
         el('p', { class: 'note' }, 'Click a map to show it in the 2D view.')), 'grow'));
@@ -4877,7 +4991,7 @@ class App {
   /** A planar projection facing the camera, at the middle of the 3D view (or at a point on the model). */
   private placeProjectionAtView(fill: FillLayer, at?: THREE.Vector3) {
     const r = this.vp.canvas.getBoundingClientRect(), v = this.vp.region;
-    const p = at ?? this.vp.pick(r.left + v.x + v.w / 2, r.top + v.y + v.h / 2)?.point;
+    const p = at ?? this.pick(r.left + v.x + v.w / 2, r.top + v.y + v.h / 2)?.point;
     const xf = (fill.xf ??= { ...DEFAULT_XF });
     const cam = this.vp.camera.position.clone();
     const target = p ?? this.vp.controls.target.clone();
@@ -4890,7 +5004,7 @@ class App {
 
   /** Substance-style: an image dropped on the model becomes a fill layer projected onto it where it was dropped. */
   async projectImage(f: File, x: number, y: number) {
-    const hit = this.vp.pick(x, y);
+    const hit = this.pick(x, y);
     const bytes = await f.arrayBuffer();
     let tex: THREE.Texture;
     try { tex = await imageTexture(bytes, f.name); } catch { toast(`Could not read the image ${f.name}`, true); return; }
@@ -5008,7 +5122,7 @@ class App {
   /** Put a new shape where the middle of the 3D view hits the model. */
   private placeShapeAtView(g: GenSettings) {
     const r = this.vp.canvas.getBoundingClientRect(), v = this.vp.region;
-    const hit = this.vp.pick(r.left + v.x + v.w / 2, r.top + v.y + v.h / 2);
+    const hit = this.pick(r.left + v.x + v.w / 2, r.top + v.y + v.h / 2);
     if (hit) { g.shapeAt = hit.point.toArray() as [number, number, number]; g.shapeNormal = hit.normal.clone().normalize().toArray() as [number, number, number]; }
   }
   // Handles in the 3D view: middle = move, ring knob = rotate, square = resize (like Substance's projection gizmo).
@@ -5094,7 +5208,7 @@ class App {
       const q = this.shapeQueued, sm = this.shapeMove;
       if (!q || !sm) return;
       this.shapeQueued = null;
-      const hit = this.vp.pick(q.x, q.y);
+      const hit = this.pick(q.x, q.y);
       if (!hit) return;
       sm.g.shapeAt = hit.point.toArray() as [number, number, number];
       sm.g.shapeNormal = hit.normal.clone().normalize().toArray() as [number, number, number];
@@ -6902,15 +7016,22 @@ class App {
     const all = allTemplates(this.exp!);
     return all.find((t) => t.id === (id ?? this.exp!.template)) ?? all[0];
   }
-  private expSizeOf(t: ExportTemplate) { const s = this.exp!.size || this.ts.size; return t.maxSize ? Math.min(s, t.maxSize) : s; }
+  private expSizeOf(t: ExportTemplate, ts: TextureSet = this.ts) { const s = this.exp!.size || ts.size; return t.maxSize ? Math.min(s, t.maxSize) : s; }
+  /** File-name base of each texture set: "<name>" for one set, "<name>_<material>" for several (Substance's $mesh_$textureSet). */
+  private expSets(): { name: string; ts: TextureSet }[] {
+    if (this.sets.length <= 1) return [{ name: this.expName, ts: this.ts }];
+    return this.sets.map((st) => ({ name: `${this.expName}_${st.name.replace(/[^\w\-]+/g, '_')}`, ts: st.ts }));
+  }
   private expFormatOf(mp: OutMap): { fmt: FileType; bits: 8 | 16 } {
     const fmt = (mp.format || this.exp!.format) as FileType;
     const bits = fmt === 'png' ? ((mp.bits || this.exp!.bits) as 8 | 16) : 8;
     return { fmt, bits };
   }
   private expList(t: ExportTemplate) {
-    const size = this.expSizeOf(t);
-    return t.maps.map((mp) => { const f = this.expFormatOf(mp); return { name: fileName(mp.name, this.expName, f.fmt), size, ...f }; });
+    return this.expSets().flatMap((x) => {
+      const size = this.expSizeOf(t, x.ts);
+      return t.maps.map((mp) => { const f = this.expFormatOf(mp); return { name: fileName(mp.name, x.name, f.fmt), size, ...f }; });
+    });
   }
   private expSave() { saveExportState(this.exp!); }
 
@@ -6928,7 +7049,7 @@ class App {
     if (this.expTab === 'settings') body = this.expSettingsTab(t);
     else if (this.expTab === 'templates') body = this.expTemplatesTab();
     else body = this.expListTab(t);
-    const count = this.expInclude ? t.maps.length : 0;
+    const count = this.expInclude ? t.maps.length * Math.max(1, this.sets.length) : 0;
     const go = el('button', { class: 'primary exp-go', disabled: this.expBusy || !count, onclick: () => this.expRun() }, this.expBusy ? 'Exporting…' : 'Export');
     dlg.append(
       el('div', { class: 'exp-title' }, el('span', {}, 'Export textures'), el('button', { class: 'exp-x', title: 'Close', onclick: () => dlg.close() }, '×')),
@@ -7111,8 +7232,8 @@ class App {
   }
 
   /** Make the files of one template (shared by Export and the tests). */
-  private async expBuild(t: ExportTemplate, opts: { size: number; padding: PadMode; padPx: number; name: string; log?: (s: string) => void }): Promise<{ name: string; blob: Blob }[]> {
-    const ts = this.ts;
+  private async expBuild(t: ExportTemplate, opts: { size: number; padding: PadMode; padPx: number; name: string; log?: (s: string) => void; ts?: TextureSet }): Promise<{ name: string; blob: Blob }[]> {
+    const ts = opts.ts ?? this.ts;
     const S = opts.size;
     const cache = new Map<string, Pix>();
     const get = (s: ExpSrc, float: boolean) => {
@@ -7154,11 +7275,16 @@ class App {
     this.expBusy = true;
     this.expTab = 'list';
     const size = this.expSizeOf(t);
-    this.expLog = [`Exporting “${this.expName}” with ${t.label} at ${size}×${size}…`];
+    const sets = this.expSets();
+    this.expLog = [`Exporting “${this.expName}”${sets.length > 1 ? ` (${sets.length} texture sets)` : ''} with ${t.label} at ${size}×${size}…`];
     this.renderExportDlg();
     const log = (s: string) => { this.expLog.push(s); const box = document.querySelector('#export-dialog .exp-log'); if (box) { box.append(el('div', { class: s.startsWith('✗') ? 'warn' : '' }, s)); box.scrollTop = box.scrollHeight; } };
     try {
-      const files = await this.expBuild(t, { size, padding: st.padding, padPx: st.padPx, name: this.expName, log });
+      const files: { name: string; blob: Blob }[] = [];
+      for (const x of sets) {
+        if (sets.length > 1) log(`Texture set ${x.name}`);
+        files.push(...await this.expBuild(t, { size: this.expSizeOf(t, x.ts), padding: st.padding, padPx: st.padPx, name: x.name, log, ts: x.ts }));
+      }
       if (this.native?.exportWrite) {
         const data = await Promise.all(files.map(async (f) => ({ name: f.name, data: new Uint8Array(await f.blob.arrayBuffer()) })));
         const r = await this.native.exportWrite(st.dir, data);
@@ -7239,18 +7365,27 @@ class App {
       const c = new THREE.BufferGeometry();
       for (const a of ['position', 'normal', 'uv', 'color'] as const) if (g.attributes[a]) c.setAttribute(a, g.attributes[a].clone());
       if (g.index) c.setIndex(g.index.clone());
+      c.name = g.name;
       if (original) { c.scale(1 / xf.scale, 1 / xf.scale, 1 / xf.scale); c.translate(xf.center[0], xf.center[1], xf.center[2]); }
       return c;
     });
     const out: { name: string; blob: Blob }[] = [];
     const scene = new THREE.Scene();
-    const mat = new THREE.MeshStandardMaterial({ name: name + '_mat', color: 0xffffff });
     const texs: THREE.Texture[] = [];
+    const mtl: string[] = [`# LocalPaint ${VERSION}`];
+    // One material per texture set (named after it), with that set's textures.
+    const setList = this.sets.length ? this.sets : [{ name: this.model.name, ts: this.ts, geos: this.model.geometries.map((_, i) => i), visible: true }];
+    const multi = setList.length > 1;
+    const mats: THREE.MeshStandardMaterial[] = [];
+    for (const st of setList) {
+    const setName = multi ? `${name}_${st.name.replace(/[^\w\-]+/g, '_')}` : name;
+    const mat = new THREE.MeshStandardMaterial({ name: multi ? st.name : name + '_mat', color: 0xffffff });
+    mats.push(mat);
     if (withTex) {
       this.exp ??= loadExportState();
       const isGlb = format === 'glb';
       const t = this.expTemplate(isGlb ? 'gltf' : 'pbr-gl');
-      const files = await this.expBuild(t, { size, padding: 'infinite', padPx: 16, name });
+      const files = await this.expBuild(t, { size, padding: 'infinite', padPx: 16, name: setName, ts: st.ts });
       // Template map names are "<texture set>_<suffix>".
       const bySuffix = (sfx: string) => files[t.maps.findIndex((x) => x.name.endsWith('_' + sfx))];
       if (isGlb) {
@@ -7271,13 +7406,16 @@ class App {
       } else {
         out.push(...files);
         const fn = (m: string) => bySuffix(m)?.name;
-        const lines = [`# LocalPaint ${VERSION}`, `newmtl ${name}_mat`, 'Ka 1 1 1', 'Kd 1 1 1', 'Ks 0 0 0', 'd 1', 'illum 2'];
+        const lines = [`newmtl ${mat.name}`, 'Ka 1 1 1', 'Kd 1 1 1', 'Ks 0 0 0', 'd 1', 'illum 2'];
         const add = (key: string, m: string) => { const f = fn(m); if (f) lines.push(`${key} ${f}`); };
         add('map_Kd', 'BaseColor'); add('map_Pr', 'Roughness'); add('map_Pm', 'Metallic'); add('norm', 'Normal'); add('map_Bump', 'Normal'); add('map_Ke', 'Emissive'); add('map_Ka', 'AmbientOcclusion');
-        out.unshift({ name: `${name}.mtl`, blob: new Blob([lines.join('\n') + '\n'], { type: 'text/plain' }) });
+        mtl.push(...lines, '');
       }
     }
-    geos.forEach((g, i) => { const m = new THREE.Mesh(g, mat); m.name = geos.length > 1 ? `${name}_${i + 1}` : name; scene.add(m); });
+    }
+    if (withTex && !format.startsWith('glb')) out.unshift({ name: `${name}.mtl`, blob: new Blob([mtl.join('\n') + '\n'], { type: 'text/plain' }) });
+    const setOfGeo = (i: number) => Math.max(0, setList.findIndex((st) => st.geos.includes(i)));
+    geos.forEach((g, i) => { const m = new THREE.Mesh(g, mats[setOfGeo(i)]); m.name = geos.length > 1 ? `${g.name || name}_${i + 1}` : name; scene.add(m); });
     try {
       if (format.startsWith('glb')) {
         const buf = await new GLTFExporter().parseAsync(scene, { binary: true, onlyVisible: false }) as ArrayBuffer;
@@ -7289,7 +7427,7 @@ class App {
         out.unshift({ name: `${name}.obj`, blob: new Blob([txt], { type: 'text/plain' }) });
       }
     } finally {
-      geos.forEach((g) => g.dispose()); texs.forEach((t) => { (t.image as ImageBitmap)?.close?.(); t.dispose(); }); mat.dispose();
+      geos.forEach((g) => g.dispose()); texs.forEach((t) => { (t.image as ImageBitmap)?.close?.(); t.dispose(); }); mats.forEach((m) => m.dispose());
     }
     return out;
   }
@@ -7322,7 +7460,7 @@ class App {
   }
   smartMaskIds() { return SMART_MASKS.filter((m) => m.painter).map((m) => m.id); }
   async projectForTest() {
-    const blob = await serializeProject(this.ts, this.model.name, this.model.source, this.projectSettings());
+    const blob = await serializeProject(this.projectSets(), this.model.name, this.model.source, this.projectSettings(), this.activeSet);
     return await blob.text();
   }
   /** Render one view flat to a PNG (base64). */

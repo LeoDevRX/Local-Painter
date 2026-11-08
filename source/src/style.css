@@ -876,3 +876,8 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
 #ctx-menu > button, .ctx-fly > button { height: 25px; font-size: 12.5px; }
 #ctx-menu > hr { margin: 3px 2px; }
 .fx-ico { font-size: 13px; }
+.ts-row { cursor: pointer; }
+.ts-row:not(.on):hover { background: var(--bg-hover, #ffffff0d); }
+.ts-row.hidden .name { opacity: .45; text-decoration: line-through; }
+.ts-row button.ts-eye { border: 0; background: none; padding: 0; width: 20px; height: 20px; cursor: pointer; }
+.ts-rows { max-height: 220px; overflow-y: auto; }

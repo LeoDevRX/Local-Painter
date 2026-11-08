@@ -45,8 +45,16 @@ export interface ProjectFile {
   layers: LayerJSON[];
   settings?: Record<string, unknown>;
   /** Baked mesh maps (gzipped RGBA8), so high-poly bakes survive without the high poly. */
-  meshMaps?: { mesh: string; bn: string; bh: string; id?: string; wsn?: string; pos?: string; baked?: BakeKey[]; highName?: string };
+  meshMaps?: MeshMapsJSON;
+  /** Models with several materials: the name of every texture set (the fields above hold the first one). */
+  setNames?: string[];
+  /** Texture sets 2, 3, … (same fields as the first). */
+  extraSets?: SetJSON[];
+  /** Texture set that was selected. */
+  activeSet?: number;
 }
+export interface MeshMapsJSON { mesh: string; bn: string; bh: string; id?: string; wsn?: string; pos?: string; baked?: BakeKey[]; highName?: string }
+export interface SetJSON { name: string; resolution: number; activeIndex: number; layers: LayerJSON[]; meshMaps?: MeshMapsJSON }
 
 /** Smart material (.tpsmart): fill layers + masks. Masks use generators, so they adapt to any model. */
 export interface SmartMaterial {
@@ -191,28 +199,52 @@ export async function restoreLayer(ts: TextureSet, l: LayerJSON, resolution: num
   return layer;
 }
 
-export async function serializeProject(
-  ts: TextureSet, name: string, model: ModelSource, settings: Record<string, unknown>,
-): Promise<Blob> {
+async function serializeSet(ts: TextureSet, name: string): Promise<SetJSON> {
   const layers: LayerJSON[] = [];
   for (const l of ts.layers) layers.push((await serializeLayer(ts, l, true))!);
-  const file: ProjectFile = {
-    format: 'texpaint-project', version: 3, name, resolution: ts.size,
-    model: model.kind === 'builtin'
-      ? { kind: 'builtin', id: model.id }
-      : { kind: 'file', name: model.name, data: toB64(new Uint8Array(model.bytes)) },
-    activeIndex: ts.layers.findIndex((l) => l.id === ts.activeId),
-    layers, settings,
-  };
+  const out: SetJSON = { name, resolution: ts.size, activeIndex: ts.layers.findIndex((l) => l.id === ts.activeId), layers };
   if (ts.bakedOnce) {
     const m = ts.readMeshMaps();
-    file.meshMaps = {
+    out.meshMaps = {
       mesh: toB64(await gzip(m.mesh)), bn: toB64(await gzip(m.bn)), bh: toB64(await gzip(m.bh)),
       id: toB64(await gzip(m.id!)), wsn: toB64(await gzip(m.wsn!)), pos: toB64(await gzip(m.pos!)), baked: m.baked,
       highName: ts.highName || undefined,
     };
   }
+  return out;
+}
+
+/** `sets`: every texture set of the model (one per material); a single TextureSet works too. */
+export async function serializeProject(
+  sets: TextureSet | { name: string; ts: TextureSet }[], name: string, model: ModelSource, settings: Record<string, unknown>, activeSet = 0,
+): Promise<Blob> {
+  const list = Array.isArray(sets) ? sets : [{ name, ts: sets }];
+  const first = await serializeSet(list[0].ts, list[0].name);
+  const file: ProjectFile = {
+    format: 'texpaint-project', version: 3, name, resolution: first.resolution,
+    model: model.kind === 'builtin'
+      ? { kind: 'builtin', id: model.id }
+      : { kind: 'file', name: model.name, data: toB64(new Uint8Array(model.bytes)) },
+    activeIndex: first.activeIndex,
+    layers: first.layers, settings,
+  };
+  if (first.meshMaps) file.meshMaps = first.meshMaps;
+  if (list.length > 1) {
+    file.setNames = list.map((x) => x.name);
+    file.extraSets = [];
+    for (const x of list.slice(1)) file.extraSets.push(await serializeSet(x.ts, x.name));
+    file.activeSet = activeSet;
+  }
   return new Blob([JSON.stringify(file)], { type: 'application/json' });
+}
+
+/** The saved data of texture set `name` (the first set lives in the file's top-level fields). */
+export function setData(f: ProjectFile, name: string, index: number): ProjectFile | null {
+  if (!f.extraSets?.length) return index === 0 ? f : null;
+  const all: SetJSON[] = [{ name: f.setNames?.[0] ?? '', resolution: f.resolution, activeIndex: f.activeIndex, layers: f.layers, meshMaps: f.meshMaps }, ...f.extraSets];
+  const hit = all.find((x) => x.name === name) ?? all[index];
+  if (!hit) return null;
+  return { ...f, resolution: hit.resolution, activeIndex: hit.activeIndex, layers: hit.layers, meshMaps: hit.meshMaps };
 }
 
 export { NotProjectError, parseProject } from './ProjectFormat';

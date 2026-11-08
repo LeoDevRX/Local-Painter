@@ -67,6 +67,12 @@ export const GUIDES: Guide[] = [
     sum: 'What LocalPaint can do in this version.',
     tags: ['new', 'update', 'version', 'changelog'], words: 'changes release notes added features latest',
     body: [
+      { h: 'New in v1.24', steps: [
+        'Texture sets: a model with several materials gets one texture set per material, like in Substance. Each has its own layers, textures, UV view and baked maps.',
+        'Click a set in the Texture Set List (top right) to paint it, or double-click a part of the model to jump to its set. The eye hides a set on the model.',
+        'Bake bakes every texture set in turn. Export textures writes one set of files per texture set (name_Material_BaseColor.png…), and Export mesh gives each material its own textures.',
+        'Projects save every texture set.',
+      ] },
       { h: 'New in v1.23', steps: [
         'Importing an FBX (or GLB) now ignores the textures it points to and reads which material each part of the mesh uses, so no more missing-texture errors.',
         'Models with several materials: the ID map gives each material its own colour (parts that share a material share the colour, on every mesh), and dropping an asset or using the polygon fill targets the material of the part you point at.',
@@ -179,7 +185,7 @@ export const GUIDES: Guide[] = [
   {
     id: 'open-model', title: 'New file / opening a model', cat: 'Basics',
     sum: 'Open an FBX, OBJ or GLB model, or start with a built in shape.',
-    tags: ['new', 'open', 'model', 'import'], words: 'fbx obj glb gltf mesh load file start blender roblox character uv material materials texture missing textures id map multiple materials',
+    tags: ['new', 'open', 'model', 'import'], words: 'fbx obj glb gltf mesh load file start blender roblox character uv material materials texture missing textures id map multiple materials texture set texture sets texture set list udim',
     body: [
       { steps: [
         'Pick a model on the start screen, use File > Open model, or drag the model file into the 3D view.',
@@ -189,11 +195,13 @@ export const GUIDES: Guide[] = [
         'The model needs UVs. Unwrap it in Blender or similar first.',
         'Textures the file points to are ignored: LocalPaint keeps the meshes, the UVs and which material each part uses.',
       ] },
-      { h: 'Models with several materials', steps: [
-        'All the materials share one texture set (one set of textures), but LocalPaint still knows which part uses which material.',
-        'The ID map bakes one colour per material. Parts that share a material get the same colour, even on different meshes. Use Smart mask > ID color selection to put a material on one of them.',
-        'Drop onto is set to Material, so dragging an asset onto a part fills everything that uses that part\'s material. The polygon fill (P) has a Material mode too.',
-        'Give your materials names in Blender. Materials with the same name count as one, like in Substance.',
+      { h: 'Models with several materials (texture sets)', steps: [
+        'Every material becomes its own texture set, like in Substance: its own layers, its own textures and its own UV space, so UVs of different materials may overlap.',
+        'The Texture Set List (top right) shows them all. Click one to paint it; the Layers panel and the 2D view switch to that set. Double-click a part of the model to jump to its set.',
+        'Only the selected set gets painted. The others stay visible on the model, and the eye next to a set hides it.',
+        'Bake bakes every set. Ambient occlusion still counts the other sets\' parts, so a handle shadows the barrel next to it.',
+        'Export textures writes each set\'s maps with its name in the file name, and Export mesh gives each material its own textures.',
+        'Give your materials names in Blender. Materials with the same name count as one set.',
       ] },
       { tips: ['File > Export mesh saves the model back out as GLB (with your textures inside) or OBJ.'] },
     ],

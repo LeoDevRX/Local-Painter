@@ -723,6 +723,8 @@ export class TextureSet {
   /** Which mesh maps have been baked (unbaked ones hold neutral values). */
   baked = new Set<BakeKey>();
   idSource: IdSource = 'auto';
+  /** Meshes rays can hit when baking without a high poly (all texture sets of the model); null = just this set's. */
+  occluders: THREE.BufferGeometry[] | null = null;
   thickSettings: ThicknessSettings = { ...DEFAULT_THICK };
   readonly parts: MeshParts;
   private highParts: { geos: THREE.BufferGeometry[]; parts: MeshParts } | null = null;
@@ -1076,7 +1078,8 @@ void main() { float v = texture2D(genTex, vUv).r; if (hasPaint) { vec4 pm = text
     let hiPos: Float32Array | null = null, hiNrm: Float32Array | null = null;
     // Bake by mesh name: low and high meshes share a name group when their names match without the suffixes.
     const rules: NameRules = { low: bs.lowSuffix ?? DEFAULT_NAME_RULES.low, high: bs.highSuffix ?? DEFAULT_NAME_RULES.high, ignoreBf: bs.bfSuffix ?? DEFAULT_NAME_RULES.ignoreBf };
-    const rayTargets = high ?? this.geometries;
+    // Other texture sets' meshes still block light (AO, thickness), like the whole model in Substance.
+    const rayTargets = high ?? this.occluders ?? this.geometries;
     const [lowKey, tgtKey] = keyIds([this.geometries.map((g) => g.name), rayTargets.map((g) => g.name)], rules);
     try {
       if (doRays) {

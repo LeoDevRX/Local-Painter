@@ -45,8 +45,15 @@ export class Viewport {
   private pmrem: THREE.PMREMGenerator;
   private group = new THREE.Group();
   meshes: THREE.Mesh[] = [];
+  /** Lit material of texture set 0 (the settings below apply to every set's material). */
   readonly litMat: THREE.MeshStandardMaterial;
   private viewMat: THREE.ShaderMaterial;
+  /** One lit / flat-view material per texture set. */
+  private litMats: THREE.MeshStandardMaterial[] = [];
+  private viewMats: THREE.ShaderMaterial[] = [];
+  /** Texture set of each mesh. */
+  private setOf: number[] = [];
+  private hiddenSets = new Set<number>();
   private cursor: THREE.Mesh;
   private raycaster = new THREE.Raycaster();
   view: ViewMode = 'material';
@@ -96,29 +103,9 @@ export class Viewport {
     this.setStudioEnv();
     this.scene.add(this.group);
 
-    this.litMat = new THREE.MeshStandardMaterial({
-      roughness: 1, metalness: 1, side: THREE.DoubleSide,
-      emissive: new THREE.Color(1, 1, 1), emissiveIntensity: 1, aoMapIntensity: 0.6,
-    });
-    // Our base-color texture holds sRGB values in a float texture: decode in the shader.
-    this.litMat.onBeforeCompile = (sh) => {
-      sh.fragmentShader = sh.fragmentShader.replace('#include <map_fragment>', /* glsl */ `
-#ifdef USE_MAP
-  vec4 sampledDiffuseColor = texture2D( map, vMapUv );
-  vec3 srgbC = clamp( sampledDiffuseColor.rgb, 0.0, 1.0 );
-  sampledDiffuseColor.rgb = mix( srgbC / 12.92, pow( ( srgbC + 0.055 ) / 1.055, vec3( 2.4 ) ), step( vec3( 0.04045 ), srgbC ) );
-  diffuseColor *= sampledDiffuseColor;
-#endif`).replace('#include <emissivemap_fragment>', /* glsl */ `
-#ifdef USE_EMISSIVEMAP
-  vec3 srgbE = clamp( texture2D( emissiveMap, vEmissiveMapUv ).rgb, 0.0, 1.0 );
-  totalEmissiveRadiance *= mix( srgbE / 12.92, pow( ( srgbE + 0.055 ) / 1.055, vec3( 2.4 ) ), step( vec3( 0.04045 ), srgbE ) );
-#endif`);
-    };
-    this.viewMat = new THREE.ShaderMaterial({
-      vertexShader: VIEW_VERT, fragmentShader: VIEW_FRAG,
-      uniforms: { map: { value: null }, mode: { value: 0 } },
-      side: THREE.DoubleSide,
-    });
+    this.litMat = this.makeLit();
+    this.viewMat = this.makeView();
+    this.litMats = [this.litMat]; this.viewMats = [this.viewMat];
 
     const ring = new THREE.RingGeometry(0.94, 1, 64);
     this.cursor = new THREE.Mesh(ring, new THREE.MeshBasicMaterial({
@@ -299,6 +286,38 @@ export class Viewport {
     }
   }
 
+
+  private makeLit(): THREE.MeshStandardMaterial {
+    const m = new THREE.MeshStandardMaterial({
+      roughness: 1, metalness: 1, side: THREE.DoubleSide,
+      emissive: new THREE.Color(1, 1, 1), emissiveIntensity: this.litMat?.emissiveIntensity ?? 1, aoMapIntensity: this.litMat?.aoMapIntensity ?? 0.6,
+    });
+    // Our base-color texture holds sRGB values in a float texture: decode in the shader.
+    m.onBeforeCompile = (sh) => {
+      sh.fragmentShader = sh.fragmentShader.replace('#include <map_fragment>', /* glsl */ `
+#ifdef USE_MAP
+  vec4 sampledDiffuseColor = texture2D( map, vMapUv );
+  vec3 srgbC = clamp( sampledDiffuseColor.rgb, 0.0, 1.0 );
+  sampledDiffuseColor.rgb = mix( srgbC / 12.92, pow( ( srgbC + 0.055 ) / 1.055, vec3( 2.4 ) ), step( vec3( 0.04045 ), srgbC ) );
+  diffuseColor *= sampledDiffuseColor;
+#endif`).replace('#include <emissivemap_fragment>', /* glsl */ `
+#ifdef USE_EMISSIVEMAP
+  vec3 srgbE = clamp( texture2D( emissiveMap, vEmissiveMapUv ).rgb, 0.0, 1.0 );
+  totalEmissiveRadiance *= mix( srgbE / 12.92, pow( ( srgbE + 0.055 ) / 1.055, vec3( 2.4 ) ), step( vec3( 0.04045 ), srgbE ) );
+#endif`);
+    };
+    return m;
+  }
+  private makeView(): THREE.ShaderMaterial {
+    return new THREE.ShaderMaterial({
+      vertexShader: VIEW_VERT, fragmentShader: VIEW_FRAG,
+      uniforms: { map: { value: null }, mode: { value: 0 } },
+      side: THREE.DoubleSide,
+    });
+  }
+  private lit(set: number) { while (this.litMats.length <= set) this.litMats.push(this.makeLit()); return this.litMats[set]; }
+  private flat(set: number) { while (this.viewMats.length <= set) this.viewMats.push(this.makeView()); return this.viewMats[set]; }
+
   /** Light direction: turn around the model (degrees) and tilt up / down (degrees, ±60). */
   envYaw = 0;
   envTilt = 0;
@@ -318,14 +337,17 @@ export class Viewport {
       neutral: THREE.NeutralToneMapping, aces: THREE.ACESFilmicToneMapping,
       agx: THREE.AgXToneMapping, none: THREE.NoToneMapping,
     }[t];
-    this.litMat.needsUpdate = true;
+    for (const m of this.litMats) m.needsUpdate = true;
   }
-  set aoStrength(v: number) { this.litMat.aoMapIntensity = v; }
-  set emissiveStrength(v: number) { this.litMat.emissiveIntensity = v; }
+  set aoStrength(v: number) { for (const m of this.litMats) m.aoMapIntensity = v; }
+  set emissiveStrength(v: number) { for (const m of this.litMats) m.emissiveIntensity = v; }
 
   // ------------------------------------------------------------ model
 
-  setModel(geometries: THREE.BufferGeometry[]) {
+  /** `setOf`: texture set of each geometry (every set gets its own material and textures). */
+  setModel(geometries: THREE.BufferGeometry[], setOf: number[] = []) {
+    this.setOf = geometries.map((_, i) => setOf[i] ?? 0);
+    this.hiddenSets.clear();
     for (const m of this.meshes) {
       this.group.remove(m);
       (m.geometry as any).disposeBoundsTree?.();
@@ -336,16 +358,25 @@ export class Viewport {
     this.setHighPreview(null, false);
     this.setHighlight('', null);
     this.setPath([], []);
-    this.meshes = geometries.map((g) => {
-      const m = new THREE.Mesh(g, this.view === 'material' ? this.litMat : this.viewMat);
+    this.meshes = geometries.map((g, i) => {
+      const set = this.setOf[i];
+      const m = new THREE.Mesh(g, this.view === 'material' ? this.lit(set) : this.flat(set));
       this.group.add(m);
       return m;
     });
     this.frame();
   }
 
-  bindTextures(ts: TextureSet) {
-    const m = this.litMat;
+  /** Show / hide one texture set's meshes (the eye in the Texture Set List). */
+  setSetVisible(set: number, v: boolean) {
+    if (v) this.hiddenSets.delete(set); else this.hiddenSets.add(set);
+    this.meshes.forEach((m, i) => { m.visible = !this.hiddenSets.has(this.setOf[i]); });
+  }
+  /** Texture set of mesh `i`. */
+  setOfMesh(i: number) { return this.setOf[i] ?? 0; }
+
+  bindTextures(ts: TextureSet, set = 0) {
+    const m = this.lit(set);
     m.map = ts.final.color.texture;
     m.roughnessMap = ts.final.rough.texture;
     m.metalnessMap = ts.final.metal.texture;
@@ -362,21 +393,25 @@ export class Viewport {
     const r = this.renderer;
     try {
       const keep = this.meshes.map((m) => m.material);
-      for (const m of this.meshes) m.material = this.viewMat;
+      this.meshes.forEach((m, i) => (m.material = this.flat(this.setOf[i])));
       r.compile(this.scene, this.camera);
       this.meshes.forEach((m, i) => (m.material = keep[i]));
       r.compile(this.scene, this.camera);
     } catch { /* fine */ }
   }
 
-  setView(view: ViewMode, src: ViewSource | null) {
+  /** `src` may differ per texture set (each set has its own textures). */
+  setView(view: ViewMode, src: ViewSource | null | ((set: number) => ViewSource | null)) {
     this.view = view;
-    if (src) {
-      this.viewMat.uniforms.map.value = src.tex;
-      this.viewMat.uniforms.mode.value = src.mode;
+    const at = typeof src === 'function' ? src : () => src;
+    const sets = new Set(this.setOf.length ? this.setOf : [0]);
+    const used = new Map<number, ViewSource | null>();
+    for (const k of sets) {
+      const s = at(k);
+      used.set(k, s);
+      if (s) { const v = this.flat(k); v.uniforms.map.value = s.tex; v.uniforms.mode.value = s.mode; }
     }
-    const mat = src ? this.viewMat : this.litMat;
-    for (const m of this.meshes) m.material = mat;
+    this.meshes.forEach((m, i) => { const k = this.setOf[i] ?? 0; m.material = used.get(k) ? this.flat(k) : this.lit(k); });
   }
 
   private camAnim = 0;
@@ -579,7 +614,7 @@ export class Viewport {
     if (px < 0 || py < 0 || px > g.w || py > g.h) return null;
     const ndc = new THREE.Vector2((px / g.w) * 2 - 1, -(py / g.h) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.camera);
-    const hit = this.raycaster.intersectObjects(this.meshes, false)[0];
+    const hit = this.raycaster.intersectObjects(this.meshes.filter((m) => m.visible), false)[0];
     if (!hit || !hit.face) return null;
     const n = hit.face.normal.clone();
     if (n.dot(this.raycaster.ray.direction) > 0) n.negate();

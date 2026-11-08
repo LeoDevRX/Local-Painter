@@ -23,6 +23,50 @@ export interface LoadedModel {
   xf: ModelXf;
   /** Material names, indexed by the material id in each geometry's groups. */
   materials?: string[];
+  /** Texture set (material id) of each geometry: models with several materials get one texture set per material. */
+  setOf?: number[];
+}
+
+/**
+ * Split geometries so each one uses a single material (like Substance, where every material is its own texture set
+ * with its own UV space). Each piece keeps only the vertices it uses.
+ */
+function splitByMaterial(geos: THREE.BufferGeometry[]): { geos: THREE.BufferGeometry[]; setOf: number[] } {
+  const out: THREE.BufferGeometry[] = [], setOf: number[] = [];
+  for (const g of geos) {
+    const ids = new Set(g.groups.map((x) => x.materialIndex ?? 0));
+    if (ids.size <= 1) { out.push(g); setOf.push(g.groups[0]?.materialIndex ?? 0); continue; }
+    const total = g.index ? g.index.count : g.attributes.position.count;
+    const vi = (i: number) => (g.index ? g.index.getX(i) : i);
+    for (const id of [...ids].sort((a, b) => a - b)) {
+      const remap = new Map<number, number>(), order: number[] = [], idx: number[] = [];
+      for (const gr of g.groups) {
+        if ((gr.materialIndex ?? 0) !== id) continue;
+        const end = Math.min(total, gr.start + gr.count);
+        for (let i = gr.start; i < end; i++) {
+          const v = vi(i);
+          let n = remap.get(v);
+          if (n === undefined) { n = order.length; remap.set(v, n); order.push(v); }
+          idx.push(n);
+        }
+      }
+      if (!idx.length) continue;
+      const ng = new THREE.BufferGeometry();
+      for (const [name, a] of Object.entries(g.attributes)) {
+        const src = a as THREE.BufferAttribute, k = src.itemSize;
+        const arr = new Float32Array(order.length * k);
+        order.forEach((v, j) => { for (let c = 0; c < k; c++) arr[j * k + c] = src.array[v * k + c] as number; });
+        ng.setAttribute(name, new THREE.BufferAttribute(arr, k));
+      }
+      ng.setIndex(new THREE.BufferAttribute(new Uint32Array(idx), 1));
+      ng.addGroup(0, idx.length, id);
+      ng.name = g.name;
+      ng.userData = { ...g.userData };
+      out.push(ng); setOf.push(id);
+    }
+    g.dispose();
+  }
+  return { geos: out, setOf };
 }
 
 /**
@@ -160,8 +204,11 @@ function fromObject(root: THREE.Object3D, name: string, flipV: boolean, source: 
     geos.push(ng);
   });
   if (noUv) warnings.push(`${noUv} mesh${noUv > 1 ? 'es have' : ' has'} no UVs and ${noUv > 1 ? 'were' : 'was'} skipped.`);
-  const model = finalize(geos, name, warnings, source, opts);
+  // Several materials: one texture set per material (the high poly stays whole, it's only baked from).
+  const split = !opts.highPoly && matNames.length > 1 ? splitByMaterial(geos) : { geos, setOf: geos.map((g) => g.groups[0]?.materialIndex ?? 0) };
+  const model = finalize(split.geos, name, warnings, source, opts);
   model.materials = matNames;
+  model.setOf = split.setOf;
   return model;
 }
 
