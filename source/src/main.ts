@@ -1389,9 +1389,11 @@ class App {
     toast(`Can't open .${ext} files`, true);
   }
 
-  setResolution(size: number) {
-    if (size === this.ts.size) return;
-    this.ts.setResolution(size);
+  /** `all`: every texture set (the bake output size); otherwise just the selected one. */
+  setResolution(size: number, all = false) {
+    const list = all && this.sets.length > 1 ? this.sets.map((st) => st.ts) : [this.ts];
+    if (list.every((ts) => ts.size === size)) return;
+    for (const ts of list) if (ts.size !== size) ts.setResolution(size);
     this.bindTextures();
     this.mapThumbs.clear();
     toast(`Texture set size: ${size} × ${size} (undo history cleared). Re-bake in the Baking tab for full detail at this size.`);
@@ -4718,9 +4720,15 @@ class App {
       return [
         group('Output',
           el('div', { class: 'row' }, el('label', {}, 'Output size'),
-            select<number>(RESOLUTIONS.map((r) => ({ value: r, label: RES_LABEL(r) })), ts.size, (v) => this.setResolution(v))),
-          el('p', { class: 'note' }, 'The size the maps are baked at (and the texture set size). 4K needs a strong GPU and takes longer — bake at 1K or 2K while setting up, then 4K for the final.'),
+            select<number>(RESOLUTIONS.map((r) => ({ value: r, label: RES_LABEL(r) })), ts.size, (v) => this.setResolution(v, true))),
+          el('p', { class: 'note' }, `The size the maps are baked at (and the texture set size${this.sets.length > 1 ? ', for every texture set' : ''}). 4K takes longer: bake at 1K or 2K while setting up, then 4K for the final.`),
           el('p', { class: 'note' }, 'Nothing bakes automatically: tick the maps you want on the left, then click Bake.'),
+          (() => {
+            const cb = el('input', { type: 'checkbox', checked: bs.gpuRays !== false }) as HTMLInputElement;
+            cb.addEventListener('change', () => { bs.gpuRays = cb.checked; });
+            return el('label', { class: 'check-row', title: 'Ambient occlusion, curvature and thickness rays run on the graphics card, like Substance. Turn it off only if a bake comes out wrong on your card.' },
+              cb, ' Bake on the graphics card (GPU, much faster)');
+          })(),
         ),
         group('High definition meshes',
           high

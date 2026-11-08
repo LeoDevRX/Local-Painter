@@ -67,6 +67,12 @@ export const GUIDES: Guide[] = [
     sum: 'What LocalPaint can do in this version.',
     tags: ['new', 'update', 'version', 'changelog'], words: 'changes release notes added features latest',
     body: [
+      { h: 'New in v1.25', steps: [
+        'Baking runs on the graphics card now, like Substance: ambient occlusion, curvature and thickness rays are traced on the GPU, many times faster than before, with the same result.',
+        'Models with several texture sets build their ray data once for all of them instead of once per set.',
+        'If a bake ever comes out wrong on your card, untick "Bake on the graphics card" under Common parameters to use the old CPU baker.',
+        'The bake Output size now sets every texture set at once.',
+      ] },
       { h: 'New in v1.24', steps: [
         'Texture sets: a model with several materials gets one texture set per material, like in Substance. Each has its own layers, textures, UV view and baked maps.',
         'Click a set in the Texture Set List (top right) to paint it, or double-click a part of the model to jump to its set. The eye hides a set on the model.',
@@ -771,6 +777,11 @@ export const GUIDES: Guide[] = [
         'If you have a high poly version of the model, click Load high poly to bake its detail. If parts come out missing, raise Ray distance (cage).',
         'Click Bake selected textures. You can see the progress at the bottom left and on the model.',
         'Press Esc to go back to painting.',
+      ] },
+      { h: 'Speed', steps: [
+        'Ambient occlusion, curvature and thickness are traced on the graphics card ("Bake on the graphics card" under Common parameters). It\'s on by default.',
+        'Bake at 1K or 2K while you set things up and save 4K for the final bake.',
+        'Fewer AO rays (Ambient occlusion settings) bake faster but look grainier.',
       ] },
       { tips: ['Smart materials and smart masks use these maps.'] },
     ],

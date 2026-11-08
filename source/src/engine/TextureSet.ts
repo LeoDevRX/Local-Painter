@@ -4,6 +4,8 @@ import { MeshBaker, BakeSettings, DEFAULT_BAKE } from './Baker';
 import { bakeHighToLow, HighBakeSettings, DEFAULT_HIGH, readFrames, FRAME_VERT, FRAME_FRAG } from './HighBaker';
 import { MeshParts, strHash, materialName, idColor } from './MeshParts';
 import { bakeThickness, downsample, ThicknessSettings, DEFAULT_THICK } from './Thickness';
+import { GpuRayBaker, gpuBakerFor } from './GpuRayBaker';
+import type { RayParams } from './rayWorker';
 import { RayBaker, SAMPLE_FLOATS } from './RayBaker';
 import { DEFAULT_NAME_RULES, keyIds, wantsIgnoreBf, type NameRules } from './meshNames';
 import { FRAG_LAYERFX, LayerFx, activeFx, fxOnChannel, filterIndex } from './LayerFx';
@@ -1153,7 +1155,22 @@ void main() { float v = texture2D(genTex, vUv).r; if (hasPaint) { vec4 pm = text
       const ext = new THREE.Vector3().subVectors(this.bboxMax, this.bboxMin);
       const scaleU = Math.max(1e-6, ext.x, ext.y, ext.z);
       const tracer = () => (rb ??= new RayBaker(rayTargets, { groups: tgtKey, cull: rayTargets.map((g) => wantsIgnoreBf(g.name, rules)) }));
-      const stopTracer = setInterval(() => { if (stale() && rb) rb.cancelled = true; }, 200);
+      // Rays on the graphics card when it can (many times faster); the CPU workers handle "same mesh name" options.
+      const useGpu = bs.gpuRays !== false && GpuRayBaker.supported(this.gpu.renderer);
+      let grb: GpuRayBaker | null = null;
+      const trace = async (pts: Float32Array, p: RayParams, prog: (f: number) => void, grp: Int32Array | null) => {
+        if (useGpu && GpuRayBaker.handles(p)) {
+          try {
+            grb = gpuBakerFor(this.gpu, rayTargets);
+            const r = await grb.run(pts, p, prog);
+            (globalThis as any).__lastTrace = 'gpu';
+            return r;
+          } catch (e) { console.warn('GPU bake failed, using the CPU', e); }
+        }
+        (globalThis as any).__lastTrace = 'cpu';
+        return tracer().run(pts, p, prog, grp);
+      };
+      const stopTracer = setInterval(() => { if (stale()) { if (rb) rb.cancelled = true; if (grb) (grb as GpuRayBaker).cancelled = true; } }, 200);
       try {
       if (doAO && traced) {
         // Ray traced like Substance: per texel position + normal (on the high poly when baking from one).
@@ -1168,7 +1185,7 @@ void main() { float v = texture2D(genTex, vUv).r; if (hasPaint) { vec4 pm = text
         let ph = 0;
         const sub = (f: number) => prog('ao', (ph + f) / parts);
         stage('ao', 'working');
-        const ao = maps.ao ? await tracer().run(pts, { ...base, kind: 'ao', rays: bs.aoRays ?? 64, maxD: (bs.aoMax ?? 1) * scaleU, radius: 0,
+        const ao = maps.ao ? await trace(pts, { ...base, kind: 'ao', rays: bs.aoRays ?? 64, maxD: (bs.aoMax ?? 1) * scaleU, radius: 0,
           sameName: bs.aoSelf === 'name', back: bs.aoBack ?? 'never' }, sub, grp) : null;
         if (maps.ao) { if (!ao || stale()) return false; ph++; }
         if (maps.ao) {
@@ -1182,7 +1199,7 @@ void main() { float v = texture2D(genTex, vUv).r; if (hasPaint) { vec4 pm = text
           stage('ao', 'done');
         }
         stage('curv', 'working');
-        const cv = maps.curv ? await tracer().run(pts, { ...base, kind: 'curv', rays: bs.curvRays ?? 32, maxD: 0, radius: (bs.curvRadius ?? 0.001) * scaleU, high: !!hiNrm,
+        const cv = maps.curv ? await trace(pts, { ...base, kind: 'curv', rays: bs.curvRays ?? 32, maxD: 0, radius: (bs.curvRadius ?? 0.001) * scaleU, high: !!hiNrm,
           sameName: bs.curvSelf === 'name' }, sub, grp) : null;
         if (maps.curv && (!cv || stale())) return false;
         // Curvature: automatic tonemapping (symmetric around 0.5 = flat), as in Substance / TextureCraft.
@@ -1231,7 +1248,7 @@ void main() { float v = texture2D(genTex, vUv).r; if (hasPaint) { vec4 pm = text
           const M = ts * ts;
           const { idx: ids, pts } = this.samples(ts, hiPos ? P : null, hiNrm ? Nn : null);
           const tk = this.thickSettings;
-          const th = await tracer().run(pts, { kind: 'thick', rays: tk.rays, minD: (tk.minDist ?? 1e-5) * scaleU, maxD: tk.maxDist * scaleU,
+          const th = await trace(pts, { kind: 'thick', rays: tk.rays, minD: (tk.minDist ?? 1e-5) * scaleU, maxD: tk.maxDist * scaleU,
             spread: tk.spread ?? 180, dist: tk.dist ?? 'cosine', atten: 'none', ground: false, groundY: 0, eps: 1e-6 * diag, meshScale: scaleU, radius: 0,
             sameName: tk.self === 'name' }, (f) => prog('thick', f), this.sampleGroups(ts, ids, lowKey));
           if (!th || stale()) return false;

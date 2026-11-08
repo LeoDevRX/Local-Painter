@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { GPU, RT, quadShader } from './gpu';
 
 export interface BakeSettings {
+  /** Trace rays on the graphics card (much faster); off = the CPU workers. */
+  gpuRays?: boolean;
   /** Number of view directions (more = smoother AO). */
   samples: number;
   /** Edge band width for curvature, in model units (model fits in radius 1). */
