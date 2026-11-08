@@ -67,6 +67,9 @@ export const GUIDES: Guide[] = [
     sum: 'What LocalPaint can do in this version.',
     tags: ['new', 'update', 'version', 'changelog'], words: 'changes release notes added features latest',
     body: [
+      { h: 'New in v1.26', steps: [
+        'Fixed: models with several materials showed black on every texture set except the selected one until you changed something. Every set now shows right after importing or opening.',
+      ] },
       { h: 'New in v1.25', steps: [
         'Baking runs on the graphics card now, like Substance: ambient occlusion, curvature and thickness rays are traced on the GPU, many times faster than before, with the same result.',
         'Models with several texture sets build their ray data once for all of them instead of once per set.',

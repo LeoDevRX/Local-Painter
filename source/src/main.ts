@@ -2941,10 +2941,13 @@ class App {
   private loop = () => {
     requestAnimationFrame(this.loop);
     const now = performance.now();
-    if (!this.ts.busy && !this.ts.baking && now > this.activeUntil && now - this.lastRender < 1000) return;
+    const othersBusy = this.sets.length > 1 && this.sets.some((st) => st.ts !== this.ts && st.ts.busy);
+    if (!this.ts.busy && !othersBusy && !this.ts.baking && now > this.activeUntil && now - this.lastRender < 1000) return;
     this.lastRender = now;
     this.ts.flushStroke();
     this.ts.compositeDirty();
+    // The other texture sets show on the model too, so they need their layers drawn as well (not just the selected one).
+    if (this.sets.length > 1) for (const st of this.sets) if (st.ts !== this.ts) st.ts.compositeDirty();
     let hit: Hit | null = null;
     if (this.hover && this.mode === 'paint' && !(this.vp.controls.enabled && this.isDraggingCamera())) {
       hit = this.pick(this.hover.x, this.hover.y);
