@@ -333,28 +333,60 @@ export class GpuRayBaker {
     u.meshScale.value = p.meshScale; u.radius.value = p.radius; u.high.value = !!p.high;
     const r = this.gpu.renderer, gl = r.getContext();
     try {
-      // Bands of rows, sized so each draw takes ~60 ms (the driver resets the card if one runs for seconds).
-      let row = 0, rows = Math.max(1, Math.min(H, Math.ceil(16384 / W)));
-      while (row < H) {
+      // Spread the work over frames: each frame gets a slice of ray tracing, sized from how fast the card went so far,
+      // and the window draws in between, so baking doesn't make the app stutter. The wait for the card never blocks.
+      const gl2 = gl as WebGL2RenderingContext;
+      const sync = () => new Promise<void>((res) => {
+        const f = gl2.fenceSync(gl2.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        gl2.flush();
+        if (!f) { res(); return; }
+        const poll = () => {
+          if (gl2.clientWaitSync(f, 0, 0) === gl2.TIMEOUT_EXPIRED) setTimeout(poll, 1);
+          else { gl2.deleteSync(f); res(); }
+        };
+        poll();
+      });
+      // Next frame (or a short timeout when the window is minimised and frames stop).
+      const nextFrame = () => new Promise<void>((res) => { let d = false; const go = () => { if (!d) { d = true; res(); } }; requestAnimationFrame(go); setTimeout(go, 40); });
+      // While you're using the window: ~14 ms per frame so it stays smooth. When LocalPaint is in the background or
+      // minimised nobody sees the frames, so it bakes in big pieces at full speed.
+      const idle = () => document.hidden || !document.hasFocus();
+      let pos = 0, rate = 0, first = true;
+      while (pos < n) {
         if (this.cancelled) return null;
-        const h = Math.min(rows, H - row);
-        rt.scissor.set(0, row, W, h);
-        rt.scissorTest = true;
+        const budget = idle() ? 80 : 14;
+        const want = Math.max(256, Math.round(rate ? rate * budget : 4096));
+        const start = pos, end = Math.min(n, pos + want);
         const t0 = performance.now();
-        this.gpu.run(this.mat, rt);
-        gl.finish();
-        // A shader the card can't compile renders nothing: hand the job to the CPU baker instead.
-        const prog = (r.properties.get(this.mat) as { currentProgram?: { diagnostics?: { runnable: boolean } } }).currentProgram;
-        if (row === 0 && (!prog || prog.diagnostics?.runnable === false)) throw new Error('GPU ray shader did not compile');
-        const ms = performance.now() - t0;
-        row += h;
-        onProgress?.(row / H);
-        rows = Math.max(1, Math.min(H, Math.round(h * Math.min(4, Math.max(0.25, 60 / Math.max(1, ms))))));
-        await new Promise((res) => setTimeout(res, 0));
+        // Whole rows where possible, part rows at the ends.
+        while (pos < end) {
+          const x = pos % W, y = Math.floor(pos / W);
+          let w: number, h: number;
+          if (x === 0 && end - pos >= W) { w = W; h = Math.min(H - y, Math.floor((end - pos) / W)); }
+          else { w = Math.min(W - x, end - pos); h = 1; }
+          rt.scissor.set(x, y, w, h);
+          rt.scissorTest = true;
+          this.gpu.run(this.mat, rt);
+          if (first) {
+            // A shader the card can't compile renders nothing: hand the job to the CPU baker instead.
+            const prog = (r.properties.get(this.mat) as { currentProgram?: { diagnostics?: { runnable: boolean } } }).currentProgram;
+            if (!prog || prog.diagnostics?.runnable === false) throw new Error('GPU ray shader did not compile');
+            first = false;
+          }
+          pos += w * h;
+        }
+        await sync();
+        const ms = Math.max(0.5, performance.now() - t0);
+        const r2 = (pos - start) / ms;
+        rate = rate ? Math.min(rate * 2, r2 * 0.5 + rate * 0.5) : r2;
+        onProgress?.(pos / n);
+        if (idle()) await new Promise((res) => setTimeout(res, 0)); else await nextFrame();
       }
       rt.scissorTest = false;
       const buf = new Float32Array(W * H * 4);
-      r.readRenderTargetPixels(rt, 0, 0, W, H, buf);
+      // Read back without stalling the window (falls back to the plain read on old three.js builds).
+      const ra = (r as unknown as { readRenderTargetPixelsAsync?: (...a: unknown[]) => Promise<unknown> }).readRenderTargetPixelsAsync;
+      if (ra) await ra.call(r, rt, 0, 0, W, H, buf); else r.readRenderTargetPixels(rt, 0, 0, W, H, buf);
       for (let i = 0; i < n; i++) out[i] = buf[i * 4];
       return out;
     } finally {

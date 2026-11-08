@@ -411,16 +411,24 @@ class App {
     this.uv.setOverlap(null);
     this.vp.setOverlap(null, false);
     const ts = this.ts, geos = ts.geometries;
+    const st = this.sets[this.activeSet];
     setTimeout(() => {
       if (this.model !== model || this.ts !== ts) return;
       let o: UVOverlap;
-      try { o = findUVOverlaps(geos, this.settings.lowPerf ? 256 : 512); } catch (e) { console.warn('uv overlap', e); return; }
+      // Once per texture set: switching sets (e.g. while baking all of them) reuses the result.
+      let fresh = false;
+      if (st?.overlap && st.ts === ts) o = st.overlap;
+      else {
+        fresh = true;
+        try { o = findUVOverlaps(geos, this.settings.lowPerf ? 256 : 512); } catch (e) { console.warn('uv overlap', e); return; }
+        if (st && st.ts === ts) st.overlap = o;
+      }
       this.uvOverlap = o;
       if (o.tris) {
         this.uv.setOverlap(overlapTexture(o));
         this.vp.setOverlap(overlapMesh(geos, o), this.showOverlap);
         this.uv.setOverlapVisible(this.showOverlap);
-        if (model.source.kind !== 'builtin') toast(`This model has ${o.areas} overlapping UV area${o.areas === 1 ? '' : 's'} (${o.tris} triangles). Painting there also paints the other spot. Press O to see them as dark spots, then fix them in Blender.`, true);
+        if (fresh && model.source.kind !== 'builtin') toast(`This model has ${o.areas} overlapping UV area${o.areas === 1 ? '' : 's'} (${o.tris} triangles). Painting there also paints the other spot. Press O to see them as dark spots, then fix them in Blender.`, true);
       }
       if (this.mode === 'paint' || this.mode === 'bake') this.buildToolbar();
       this.poke();
@@ -2118,7 +2126,7 @@ class App {
   private projectSets() { return this.sets.length ? this.sets.map((st) => ({ name: st.name, ts: st.ts })) : [{ name: this.model.name, ts: this.ts }]; }
 
   /** Every texture set of the model; `this.ts` is the active one. */
-  sets: { name: string; ts: TextureSet; geos: number[]; visible: boolean }[] = [];
+  sets: { name: string; ts: TextureSet; geos: number[]; visible: boolean; overlap?: UVOverlap }[] = [];
   activeSet = 0;
 
   /**

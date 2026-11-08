@@ -67,6 +67,11 @@ export const GUIDES: Guide[] = [
     sum: 'What LocalPaint can do in this version.',
     tags: ['new', 'update', 'version', 'changelog'], words: 'changes release notes added features latest',
     body: [
+      { h: 'New in v1.27', steps: [
+        'GPU baking no longer makes the app stutter: the ray tracing is spread over frames, so the window stays smooth while it bakes.',
+        'When LocalPaint is in the background or minimised, it bakes at full speed, since nobody is watching the frames.',
+        'Switching texture sets (also while baking all of them) no longer re-checks the UVs every time.',
+      ] },
       { h: 'New in v1.26', steps: [
         'Fixed: models with several materials showed black on every texture set except the selected one until you changed something. Every set now shows right after importing or opening.',
       ] },
