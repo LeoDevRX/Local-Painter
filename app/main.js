@@ -129,6 +129,25 @@ ipcMain.handle('file:import', async (e) => {
   });
 });
 
+/** Reimport mesh: read a model file again (only 3D model files). */
+const MODEL_EXT = /\.(fbx|obj|glb|gltf)$/i;
+function readModelFile(p) {
+  if (!p || !MODEL_EXT.test(p) || !fs.existsSync(p)) return null;
+  const b = fs.readFileSync(p);
+  return { path: p, name: path.basename(p), data: b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) };
+}
+ipcMain.handle('model:read', (_e, p) => readModelFile(p));
+ipcMain.handle('model:pick', async (e, near) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  const r = await dialog.showOpenDialog(win, {
+    title: 'Reimport mesh', properties: ['openFile'],
+    defaultPath: near && fs.existsSync(path.dirname(near)) ? near : lastDir,
+    filters: [{ name: '3D model', extensions: ['fbx', 'obj', 'glb', 'gltf'] }],
+  });
+  if (r.canceled || !r.filePaths[0]) return null;
+  return readModelFile(r.filePaths[0]);
+});
+
 /** Make .lp (and old .lmp) files open in LocalPaint and show its icon in Explorer (current user only, no admin needed). */
 function registerFileType() {
   if (process.platform !== 'win32' || process.env.LMP_NO_ASSOC || process.env.LOCALPAINT_NO_ASSOC) return;

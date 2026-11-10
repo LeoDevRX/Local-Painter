@@ -1,5 +1,5 @@
 // Bridge between LocalPaint.html and the app: presets folder, .lp project files, importing files.
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('texpaintNative', {
   isApp: true,
@@ -11,6 +11,10 @@ contextBridge.exposeInMainWorld('texpaintNative', {
   openProject: () => ipcRenderer.invoke('project:open'),
   readProject: (p, autosave) => ipcRenderer.invoke('project:read', p, !!autosave),
   importFiles: () => ipcRenderer.invoke('file:import'),
+  // Reimport mesh: where a dropped / picked model file lives, and reading it again from there.
+  pathOf: (f) => { try { return webUtils.getPathForFile(f) || ''; } catch { return ''; } },
+  readModel: (p) => ipcRenderer.invoke('model:read', p),
+  pickModel: (near) => ipcRenderer.invoke('model:pick', near),
   onOpenPath: (cb) => ipcRenderer.on('project:open-path', (_e, p) => cb(p)),
   onCloseRequest: (cb) => ipcRenderer.on('app:close-request', () => cb()),
   ackClose: () => ipcRenderer.send('app:close-ack'),

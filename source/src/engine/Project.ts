@@ -40,7 +40,7 @@ export interface ProjectFile {
   version: 1 | 2 | 3;
   name: string;
   resolution: number;
-  model: { kind: 'builtin'; id: string } | { kind: 'file'; name: string; data: string };
+  model: { kind: 'builtin'; id: string } | { kind: 'file'; name: string; data: string; path?: string };
   activeIndex: number;
   layers: LayerJSON[];
   settings?: Record<string, unknown>;
@@ -224,7 +224,7 @@ export async function serializeProject(
     format: 'texpaint-project', version: 3, name, resolution: first.resolution,
     model: model.kind === 'builtin'
       ? { kind: 'builtin', id: model.id }
-      : { kind: 'file', name: model.name, data: toB64(new Uint8Array(model.bytes)) },
+      : { kind: 'file', name: model.name, data: toB64(new Uint8Array(model.bytes)), path: model.path || undefined },
     activeIndex: first.activeIndex,
     layers: first.layers, settings,
   };
@@ -239,10 +239,14 @@ export async function serializeProject(
 }
 
 /** The saved data of texture set `name` (the first set lives in the file's top-level fields). */
-export function setData(f: ProjectFile, name: string, index: number): ProjectFile | null {
-  if (!f.extraSets?.length) return index === 0 ? f : null;
+export function setData(f: ProjectFile, name: string, index: number, byNameOnly = false): ProjectFile | null {
+  if (!f.extraSets?.length) {
+    // One set saved: it goes to the first set (or, matching by name, to the set with its name).
+    if (!byNameOnly) return index === 0 ? f : null;
+    return (f.setNames?.[0] ?? '') === name || (!f.setNames && index === 0) ? f : null;
+  }
   const all: SetJSON[] = [{ name: f.setNames?.[0] ?? '', resolution: f.resolution, activeIndex: f.activeIndex, layers: f.layers, meshMaps: f.meshMaps }, ...f.extraSets];
-  const hit = all.find((x) => x.name === name) ?? all[index];
+  const hit = all.find((x) => x.name === name) ?? (byNameOnly ? undefined : all[index]);
   if (!hit) return null;
   return { ...f, resolution: hit.resolution, activeIndex: hit.activeIndex, layers: hit.layers, meshMaps: hit.meshMaps };
 }

@@ -532,6 +532,7 @@ class App {
     try {
       toast(`Loading ${mesh!.name}…`);
       const m = await parseModel(mesh!.name, await mesh!.arrayBuffer());
+      if (m.source.kind === 'file') m.source.path = this.pathOfFile(mesh!);
       this.setModel(m, res);
       if (np.template === 'empty') { for (const st of this.sets) { st.ts.addPaintLayer('Layer 1'); st.ts.clearHistory(); } this.sel.clear(); }
       else this.newDefaultLayers();
@@ -1310,7 +1311,7 @@ class App {
     const native = (window as any).texpaintNative;
     if (native?.importFiles) {
       const list = (await native.importFiles()) as { path: string; name: string; data: ArrayBuffer }[];
-      const files = list.map((f) => new File([f.data], f.name));
+      const files = list.map((f) => { const file = new File([f.data], f.name); (file as any).__path = f.path; return file; });
       if (files.length === 1 && /\.(lmp|tpaint)$/i.test(files[0].name)) { await this.openProjectFromPath(list[0].path, list[0].data); return; }
       if (files.length) await this.dropFiles(files);
       return;
@@ -1319,11 +1320,13 @@ class App {
     if (f) await this.openAny(f);
   }
 
-  async openProjectText(text: string) {
+  /** `reimport`: put this project's layers on a new version of the mesh (texture sets matched by material name). */
+  async openProjectText(text: string, reimport?: LoadedModel) {
     const f = await parseProject(text);
-    const model = f.model.kind === 'builtin'
+    const model = reimport ?? (f.model.kind === 'builtin'
       ? builtinModel(f.model.id as BuiltinId)
-      : await parseModel(f.model.name, fromB64(f.model.data).buffer as ArrayBuffer);
+      : await parseModel(f.model.name, fromB64(f.model.data).buffer as ArrayBuffer));
+    if (!reimport && f.model.kind === 'file' && model.source.kind === 'file' && f.model.path) model.source.path = f.model.path;
     const s = (f.settings ?? {}) as any;
     if (this.ts && s.bake) this.ts.bakeSettings = { ...this.ts.bakeSettings, ...s.bake };
     if (this.ts && s.high) this.ts.highSettings = { ...this.ts.highSettings, ...s.high };
@@ -1332,14 +1335,23 @@ class App {
     this.setModel(model, f.resolution, !!f.meshMaps);
     // Every texture set gets its own layers and baked maps back (older projects: the first set only).
     let maps = false;
+    const fresh: TextureSet[] = [];
+    const byName = !!reimport && this.sets.length > 1;
     for (let i = 0; i < this.sets.length; i++) {
       const st = this.sets[i];
-      const d = setData(f, st.name, i);
-      if (!d) continue;
+      const d = setData(f, st.name, i, byName);
+      if (!d) { if (reimport) fresh.push(st.ts); continue; }
       if (d.resolution !== st.ts.size) st.ts.setResolution(d.resolution);
       await restoreLayers(st.ts, d);
       if (await restoreMeshMaps(st.ts, d)) maps = true;
     }
+    // Reimport: materials that are new in the mesh start with the usual starting layers.
+    for (const ts of fresh) {
+      ts.addFillLayer('Base material', { color: [0.62, 0.62, 0.62], rough: 0.45, metal: 0, height: 0.5 }, { color: true, rough: true, metal: true, height: true }, false);
+      ts.addPaintLayer('Layer 1');
+      ts.clearHistory();
+    }
+    this.reimportNew = fresh.length;
     if (this.sets.length > 1 && f.activeSet && this.sets[f.activeSet]) this.switchSet(f.activeSet);
     if (maps) { this.bindTextures(); this.updateBakeStatus(); }
     if (s.brush) {
@@ -1355,6 +1367,80 @@ class App {
     this.normalFormat = s.normalFormat === 'dx' ? 'dx' : 'gl';
     this.modified = false;
     this.buildAll();
+  }
+
+  private reimportNew = 0;
+
+  /** Where a model file lives on disk (desktop app), so Reimport mesh can read it again. */
+  private pathOfFile(f: File): string {
+    const native = (window as any).texpaintNative;
+    return (f as any).__path || native?.pathOf?.(f) || '';
+  }
+
+  /**
+   * File → Reimport mesh (Substance's "reimport"): load the changed mesh (same file again, or another one) under the
+   * current project. Layers stay; texture sets are matched by material name; mesh maps stay until you bake again.
+   */
+  async reimportMesh() {
+    if (this.sets.some((st) => st.ts.baking) || this.bakingAll) { toast('Wait for the bake to finish first.', true); return; }
+    const native = (window as any).texpaintNative;
+    const src = this.model.source;
+    const known = src.kind === 'file' ? src.path : undefined;
+    let got: { name: string; data: ArrayBuffer; path: string } | null = null;
+    if (known && native?.readModel) {
+      const base = known.split(/[\\/]/).pop();
+      const r = await this.modal({
+        title: 'Reimport mesh', icon: 'question',
+        text: `Load ${base} again from disk (after changing it in Blender), or pick another file? Your layers stay. Texture sets are matched by material name.`,
+        buttons: [['Reload this file', 'same', 'primary'], ['Pick another file…', 'pick'], ['Cancel', 'cancel']],
+      });
+      if (r !== 'same' && r !== 'pick') return;
+      if (r === 'same') {
+        const d = await native.readModel(known);
+        if (d) got = d;
+        else toast(`${base} isn't there anymore. Pick the mesh file.`, true);
+      }
+    }
+    if (!got) {
+      if (native?.pickModel) got = await native.pickModel(known);
+      else {
+        const f = await pickFile('.glb,.gltf,.fbx,.obj');
+        if (f) got = { name: f.name, data: await f.arrayBuffer(), path: this.pathOfFile(f) };
+      }
+    }
+    if (!got) return;
+    let m: LoadedModel;
+    try {
+      // Same placement as the current mesh, so shapes, projections and the high poly still line up.
+      m = await parseModel(got.name, got.data, { xf: this.model.xf });
+    } catch (e: any) { toast(`Could not read ${got.name}: ${e?.message ?? e}`, true); return; }
+    if (m.source.kind === 'file') m.source.path = got.path || undefined;
+    const oldSets = this.sets.map((st) => st.name);
+    // Texture sets that would disappear (their material is gone or renamed): ask before dropping their layers.
+    const ids = [...new Set(m.setOf ?? [0])];
+    const newNames = ids.length > 1 ? ids.map((id) => m.materials?.[id] ?? `Material ${id + 1}`) : null;
+    const lost = oldSets.length > 1 && newNames ? oldSets.filter((n) => !newNames.includes(n)) : oldSets.length > 1 && !newNames ? oldSets.slice(1) : [];
+    if (lost.length) {
+      const r = await this.modal({
+        title: 'Some texture sets are missing', icon: 'warn',
+        text: `The new mesh has no material called ${lost.map((n) => `“${n}”`).join(', ')}. Those texture sets and their layers would be dropped. Rename the material in Blender to keep them, or continue.`,
+        buttons: [['Continue', 'ok', 'primary'], ['Cancel', 'cancel']],
+      });
+      if (r !== 'ok') return;
+    }
+    const high = this.high, useHigh = this.useHigh, path = this.projectPath, view = this.vp.camera.position.clone(), target = this.vp.controls.target.clone();
+    const text = await (await serializeProject(this.projectSets(), this.model.name || this.projectName(), this.model.source, this.projectSettings(), this.activeSet)).text();
+    await this.openProjectText(text, m);
+    if (high) { this.high = high; this.useHigh = useHigh; }
+    this.projectPath = path;
+    this.vp.camera.position.copy(view); this.vp.controls.target.copy(target); this.vp.controls.update();
+    this.modified = true;
+    this.updateTitle();
+    this.buildAll();
+    const parts = [`Mesh reimported (${m.geometries.length} mesh${m.geometries.length === 1 ? '' : 'es'}${this.sets.length > 1 ? `, ${this.sets.length} texture sets` : ''}).`];
+    if (this.reimportNew && this.sets.length > 1) parts.push(`${this.reimportNew} new material${this.reimportNew === 1 ? '' : 's'} got fresh layers.`);
+    parts.push('Bake again (Baking, top right) to update the mesh maps.');
+    toast(parts.join(' '));
   }
 
   private projectOpenFailed(e: any) {
@@ -3299,6 +3385,7 @@ class App {
     host.append(
       menu('File', () => [
         ['Open model…', async () => { const f = await pickFile('.glb,.gltf,.fbx,.obj'); if (f) this.openModelFile(f); }],
+        ['Reimport mesh…', () => this.reimportMesh()],
         '-',
         ['Open project…', () => this.openProjectDialog(), 'Ctrl+O'],
         ...(this.native ? [['Recent & autosaves…', () => this.openWindow('recent')] as Item] : []),

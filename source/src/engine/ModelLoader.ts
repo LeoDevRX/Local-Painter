@@ -11,7 +11,7 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 export type ModelSource =
   | { kind: 'builtin'; id: BuiltinId }
-  | { kind: 'file'; name: string; bytes: ArrayBuffer };
+  | { kind: 'file'; name: string; bytes: ArrayBuffer; /** Where it lives on disk (desktop app), for Reimport mesh. */ path?: string };
 
 export interface LoadedModel {
   name: string;

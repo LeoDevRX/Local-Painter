@@ -67,6 +67,12 @@ export const GUIDES: Guide[] = [
     sum: 'What LocalPaint can do in this version.',
     tags: ['new', 'update', 'version', 'changelog'], words: 'changes release notes added features latest',
     body: [
+      { h: 'New in v1.28', steps: [
+        'File > Reimport mesh: changed the model in Blender? Load it again without starting over. Your layers stay, and texture sets are matched by material name.',
+        'In the desktop app it remembers where the mesh file is, so Reload this file is one click. Pick another file works too.',
+        'New materials get the usual starting layers. If a material is gone, LocalPaint asks before dropping its layers.',
+        'Bake again afterwards to update the mesh maps.',
+      ] },
       { h: 'New in v1.27', steps: [
         'GPU baking no longer makes the app stutter: the ray tracing is spread over frames, so the window stays smooth while it bakes.',
         'When LocalPaint is in the background or minimised, it bakes at full speed, since nobody is watching the frames.',
@@ -199,7 +205,7 @@ export const GUIDES: Guide[] = [
   {
     id: 'open-model', title: 'New file / opening a model', cat: 'Basics',
     sum: 'Open an FBX, OBJ or GLB model, or start with a built in shape.',
-    tags: ['new', 'open', 'model', 'import'], words: 'fbx obj glb gltf mesh load file start blender roblox character uv material materials texture missing textures id map multiple materials texture set texture sets texture set list udim',
+    tags: ['new', 'open', 'model', 'import'], words: 'fbx obj glb gltf mesh load file start blender roblox character uv material materials texture missing textures id map multiple materials texture set texture sets texture set list udim reimport re-import reload mesh update mesh changed mesh',
     body: [
       { steps: [
         'Pick a model on the start screen, use File > Open model, or drag the model file into the 3D view.',
@@ -208,6 +214,12 @@ export const GUIDES: Guide[] = [
         'Under Advanced settings you can pick the normal map format (OpenGL or DirectX) and bring in mesh maps you already baked somewhere else.',
         'The model needs UVs. Unwrap it in Blender or similar first.',
         'Textures the file points to are ignored: LocalPaint keeps the meshes, the UVs and which material each part uses.',
+      ] },
+      { h: 'Changed the mesh?', steps: [
+        'File > Reimport mesh loads the new version of the model into the project you have open. Your layers stay.',
+        'Desktop app: Reload this file reads the same file again. Or pick another file.',
+        'Texture sets are matched by material name, so keep the material names the same in Blender. New materials get fresh layers.',
+        'Then bake again (Baking, top right) so the mesh maps fit the new mesh.',
       ] },
       { h: 'Models with several materials (texture sets)', steps: [
         'Every material becomes its own texture set, like in Substance: its own layers, its own textures and its own UV space, so UVs of different materials may overlap.',
