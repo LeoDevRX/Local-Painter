@@ -881,3 +881,24 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
 .ts-row.hidden .name { opacity: .45; text-decoration: line-through; }
 .ts-row button.ts-eye { border: 0; background: none; padding: 0; width: 20px; height: 20px; cursor: pointer; }
 .ts-rows { max-height: 220px; overflow-y: auto; }
+/* Planar projection box (Substance-style) */
+#proj-gizmo { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 40; overflow: visible; }
+#proj-gizmo .pg-shadow { fill: none; stroke: #000a; stroke-width: 3; }
+#proj-gizmo .pg-box { fill: transparent; stroke: #fff; stroke-width: 1.2; stroke-dasharray: 5 4; pointer-events: all; cursor: move; }
+#proj-gizmo .pg-h { fill: #3ddc5a; stroke: #0b3d16; stroke-width: 1; pointer-events: all; }
+#proj-gizmo .pg-h[data-h="c00"], #proj-gizmo .pg-h[data-h="c11"] { cursor: nesw-resize; }
+#proj-gizmo .pg-h[data-h="c10"], #proj-gizmo .pg-h[data-h="c01"] { cursor: nwse-resize; }
+#proj-gizmo .pg-h[data-h="ex0"], #proj-gizmo .pg-h[data-h="ex1"] { cursor: ew-resize; }
+#proj-gizmo .pg-h[data-h="e0y"], #proj-gizmo .pg-h[data-h="e1y"] { cursor: ns-resize; }
+#proj-gizmo .pg-ax { stroke-width: 3; pointer-events: stroke; cursor: grab; }
+#proj-gizmo .pg-ax.pg-x { stroke: #e0452f; }
+#proj-gizmo .pg-ax.pg-y { stroke: #63b04a; }
+#proj-gizmo .pg-end { stroke: #0008; stroke-width: 1; pointer-events: all; cursor: pointer; }
+#proj-gizmo .pg-end.pg-x { fill: #e0452f; }
+#proj-gizmo .pg-end.pg-y { fill: #63b04a; }
+#proj-gizmo .pg-mid { fill: #ffffff22; stroke: #fff; stroke-width: 1.2; pointer-events: all; cursor: move; }
+#proj-gizmo .pg-rotline { stroke: #fff9; stroke-width: 1; }
+#proj-gizmo .pg-rot { fill: #2b2b33; stroke: #fff; stroke-width: 1.5; pointer-events: all; cursor: grab; }
+#proj-gizmo .hot, #proj-gizmo [data-h]:hover:not(.pg-box) { fill: #ffd400; stroke: #ffd400; }
+#proj-gizmo .pg-box:hover, #proj-gizmo .pg-box.hot { fill: #ffffff08; stroke: #ffd400; }
+.menu-items.drop-menu { position: fixed; z-index: 120; display: block; min-width: 180px; }

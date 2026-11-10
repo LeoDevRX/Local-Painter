@@ -10,7 +10,6 @@ import {
 import { BrushPreset, BrushSettings, BUILTIN_TIPS, STARTER_BRUSHES, brushCategory, builtinTip, builtinTipThumb, imageTip, tipTexture, tipPreview } from './brushes';
 import { ALPHA_LIBRARY } from './alphas';
 import { installColorPopover } from './colorPopover';
-import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { meshKey } from './engine/meshNames';
 import { LayerFx, LayerFxKind, defaultFx, FILTERS, FILTER_TYPES, FilterType, fxTitle, FX_KIND_LABEL } from './engine/LayerFx';
 import { DEFAULT_THICK } from './engine/Thickness';
@@ -2035,7 +2034,7 @@ class App {
         this.startAdjust(e);
         return;
       }
-      if (this.pj && (this.pj.tc.axis || this.pj.tc.dragging)) return; // on the 3D manipulator's handles
+      if (this.pj && e.button === 0 && !e.altKey) return; // projection open: its box has the handles; the model click does nothing
       if (e.button === 0 && !e.altKey && this.shapeMove) {
         controls.enabled = false;
         try { canvas.setPointerCapture(e.pointerId); } catch { /* not an active pointer */ }
@@ -2951,12 +2950,6 @@ class App {
     }
     if (t && (t.tagName === 'INPUT' && ['text', 'search', 'number'].includes((t as HTMLInputElement).type))) return;
     if (this.pie && e.key === 'Escape') { e.preventDefault(); this.closePie(); return; }
-    if (this.pj && !e.ctrlKey && !e.metaKey && !e.altKey && (k === 'w' || k === 'e' || k === 'r')) {
-      e.preventDefault();
-      this.pj.tc.setMode(k === 'w' ? 'translate' : k === 'e' ? 'rotate' : 'scale');
-      this.buildToolbar();
-      return;
-    }
     if (e.code === 'Backquote' && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       if (!e.repeat && !this.pie) this.openPie();
@@ -3434,7 +3427,7 @@ class App {
       ['Orbit / Pan / Zoom', 'RMB or Alt+LMB / MMB / Wheel'], ['Move the light (sun)', 'Shift + right-drag'], ['Frame model (or 2D view)', 'F'],
       ['Guide', 'F1'], ['Layouts 3D / 2D / 3D+2D', 'F2 / F3 / F4'], ['History panel', 'H'], ['Straight line', 'Shift+click'], ['Path tool / polygon fill', 'L / G'], ['X symmetry', 'X'], ['Views (both panes)', '1 – 9, 0'], ['Camera views (front, top, left…)', 'Hold ~'],
       ['Paint the layer mask', 'M'], ['UV wireframe', 'W'], ['UV overlaps (dark spots)', 'O'], ['Brush size', 'Ctrl + scroll'], ['Brush hardness', 'Ctrl + right-drag'], ['Stroke opacity', 'Ctrl + Shift + scroll'], ['Brush flow / rotation', 'Ctrl + left-drag ←→ / ↑↓'], ['Undo / Redo', 'Ctrl+Z / Ctrl+Y'], ['Cut / copy / paste layers', 'Ctrl+X / Ctrl+C / Ctrl+V'], ['Copy / paste mask', 'Ctrl+Alt+C / Ctrl+Alt+V'], ['Flatten layer or folder', 'Ctrl+M'], ['Select several layers / assets', 'Ctrl+click · Shift+click'], ['Group / duplicate / delete selected layers', 'Ctrl+G / Ctrl+D / Delete'],
-      ['Save / Save as / Open / Import', 'Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+I'], ['Export textures', 'Ctrl+Shift+E'], ['Projection: move / rotate / scale', 'W / E / R (while editing a projection)'], ['Snap while dragging the manipulator', 'Shift'], ['Leave Baking mode / close panel', 'Esc'],
+      ['Save / Save as / Open / Import', 'Ctrl+S / Ctrl+Shift+S / Ctrl+O / Ctrl+I'], ['Export textures', 'Ctrl+Shift+E'], ['Projection box: keep the shape / turn in 15° steps', 'Shift (while dragging a corner / the round handle)'], ['Leave Baking mode / close panel', 'Esc'],
     ];
     dlg.append(el('header', {}, 'Keyboard shortcuts'),
       el('div', { class: 'body' }, ...rows.map(([a, b]) => el('div', { class: 'row' }, el('label', { style: { flexBasis: '220px' } }, a), el('span', { class: 'kbd' }, b)))),
@@ -3528,15 +3521,10 @@ class App {
       return;
     }
     if (this.shapeMove?.fill && this.pj) {
-      const pj = this.pj;
-      const mode = (m: 'translate' | 'rotate' | 'scale', label: string, key: string) => el('button', { class: pj.tc.mode === m ? 'on' : '', title: `${label} (${key})`, onclick: () => { pj.tc.setMode(m); this.buildToolbar(); } }, `${label} (${key})`);
       host.append(el('div', { class: 'tb-title' }, 'Projection'),
-        el('div', { class: 'seg tb-seg' }, mode('translate', 'Move', 'W'), mode('rotate', 'Rotate', 'E'), mode('scale', 'Scale', 'R')),
-        el('div', { class: 'seg tb-seg' },
-          el('button', { class: pj.tc.space === 'local' ? 'on' : '', title: 'Axes follow the projection', onclick: () => { pj.tc.setSpace('local'); this.buildToolbar(); } }, 'Local'),
-          el('button', { class: pj.tc.space === 'world' ? 'on' : '', title: 'Axes follow the scene', onclick: () => { pj.tc.setSpace('world'); this.buildToolbar(); } }, 'World')),
+        el('span', { class: 'tb-note' }, 'Drag inside the box to move · corners and edges to resize (Shift keeps the shape) · arrows: slide, square ends: stretch · round handle: turn'),
+        el('button', { title: 'Point the projection straight at the camera again', onclick: () => this.faceCamera() }, 'Face camera'),
         el('button', { title: 'Back to facing the camera in the middle of the view, default size', onclick: () => this.resetProjection() }, 'Reset'),
-        el('span', { class: 'tb-note' }, 'Shift snaps · drag on the model to stick it to the surface'),
         el('button', { class: 'primary', onclick: () => this.toggleShapeMove(this.shapeMove!.layer, this.shapeMove!.g, true) }, 'Done (Esc)'), right);
       return;
     }
@@ -5104,21 +5092,27 @@ class App {
     xf.shapeAt = target.toArray() as [number, number, number];
     xf.shapeNormal = cam.sub(target).normalize().toArray() as [number, number, number];
     xf.shapeSize ??= 0.3; xf.shapeRot ??= 0;
-    const img = fill.images?.color?.tex.image as { width?: number; height?: number } | undefined;
+    const im = fill.images?.color ?? Object.values(fill.images ?? {})[0];
+    const img = im?.tex.image as { width?: number; height?: number } | undefined;
     xf.shapeAspect ??= img?.width && img?.height ? img.width / img.height : 1;
   }
 
-  /** Substance-style: an image dropped on the model becomes a fill layer projected onto it where it was dropped. */
+  /**
+   * Substance-style: an image dropped on the model asks which channel it's for (base color, height, roughness…), then
+   * becomes a fill layer projected onto the model where it was dropped.
+   */
   async projectImage(f: File, x: number, y: number) {
+    const ch = await this.pickDropChannel(x, y);
+    if (!ch) return;
     const hit = this.pick(x, y);
     const bytes = await f.arrayBuffer();
     let tex: THREE.Texture;
     try { tex = await imageTexture(bytes, f.name); } catch { toast(`Could not read the image ${f.name}`, true); return; }
     const name = f.name.replace(/\.[^.]+$/, '');
-    const enabled: Partial<Record<Ch, boolean>> = { color: true };
+    const enabled: Partial<Record<Ch, boolean>> = { [ch]: true };
     let layer!: FillLayer;
     await this.ts.batch(`Project ${f.name}`, () => {
-      layer = this.ts.addFillLayer(name, undefined, enabled, true, { color: { name: f.name, bytes, tex } }, 1);
+      layer = this.ts.addFillLayer(name, undefined, enabled, true, { [ch]: { name: f.name, bytes, tex } }, 1);
       layer.xf = { ...DEFAULT_XF, proj: 'planar', hideBack: true, useAlpha: true };
       this.placeProjectionAtView(layer, hit?.point);
     });
@@ -5130,46 +5124,53 @@ class App {
     this.toggleShapeMove(layer, layer.xf as unknown as GenSettings, true);
   }
 
-  // ---------------------------------------------------------------- Planar projection: 3D manipulator (like Substance)
-  private pj: { tc: TransformControls; obj: THREE.Object3D; helper: THREE.Object3D; layer: FillLayer; snap: (e: KeyboardEvent) => void } | null = null;
+  /** The small menu Substance shows when you drop a picture on the model: which channel it goes into. */
+  private pickDropChannel(x: number, y: number): Promise<Ch | null> {
+    return new Promise((res) => {
+      const chans: [Ch, string][] = [['color', 'Base color'], ['height', 'Height'], ['metal', 'Metallic'], ['normal', 'Normal'], ['rough', 'Roughness'], ['emit', 'Emissive']];
+      let done = false;
+      const finish = (v: Ch | null) => { if (done) return; done = true; m.remove(); window.removeEventListener('pointerdown', away, true); window.removeEventListener('keydown', key, true); res(v); };
+      const m = el('div', { class: 'menu-items drop-menu' },
+        el('div', { class: 'ctx-title muted' }, 'Project the picture into'),
+        ...chans.map(([c, label]) => el('button', { onclick: () => finish(c) }, label)));
+      document.body.append(m);
+      const r = m.getBoundingClientRect();
+      m.style.left = `${Math.min(x, innerWidth - r.width - 8)}px`;
+      m.style.top = `${Math.min(y, innerHeight - r.height - 8)}px`;
+      const away = (e: PointerEvent) => { if (!m.contains(e.target as Node)) finish(null); };
+      const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(null); } };
+      setTimeout(() => { window.addEventListener('pointerdown', away, true); window.addEventListener('keydown', key, true); }, 0);
+    });
+  }
+
+  // ---------------------------------------------------------------- Planar projection: on-screen manipulator (like Substance)
+  /**
+   * The projected image's box drawn over the 3D view: a dashed rectangle with corner / edge handles to resize, an X / Y
+   * gizmo in the middle (drag an arrow to slide along it, its square end to stretch that way, the middle square or the
+   * inside of the box to move freely) and a round handle above to turn it. Everything happens on the projection's own
+   * plane, so the image follows the cursor exactly.
+   */
+  private pj: { layer: FillLayer; svg: SVGSVGElement; raf: number; hover: string } | null = null;
 
   private openProjGizmo(layer: FillLayer) {
     this.closeProjGizmo();
-    const obj = new THREE.Object3D();
-    // The projection box: the image's rectangle plus a line showing which way it projects.
-    const pts = [[-0.5, -0.5, 0], [0.5, -0.5, 0], [0.5, -0.5, 0], [0.5, 0.5, 0], [0.5, 0.5, 0], [-0.5, 0.5, 0], [-0.5, 0.5, 0], [-0.5, -0.5, 0],
-      [-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5], [-0.5, 0.5, 0.5], [-0.5, -0.5, 0.5],
-      [-0.5, -0.5, 0], [-0.5, -0.5, 0.5], [0.5, -0.5, 0], [0.5, -0.5, 0.5], [0.5, 0.5, 0], [0.5, 0.5, 0.5], [-0.5, 0.5, 0], [-0.5, 0.5, 0.5],
-      [0, 0, 0.5], [0, 0, -0.5]].map((p) => new THREE.Vector3(...p));
-    const box = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts),
-      new THREE.LineBasicMaterial({ color: 0xb794ff, depthTest: false, transparent: true, opacity: 0.85 }));
-    box.renderOrder = 998;
-    obj.add(box);
-    this.vp.scene.add(obj);
-    const tc = new TransformControls(this.vp.camera, this.vp.canvas);
-    tc.setSpace('local');
-    tc.setSize(0.85);
-    tc.attach(obj);
-    const helper = tc.getHelper();
-    this.vp.scene.add(helper);
-    tc.addEventListener('change', () => this.poke());
-    tc.addEventListener('dragging-changed', (ev) => {
-      const on = !!(ev as unknown as { value: boolean }).value;
-      this.vp.controls.enabled = !on;
-      if (on) this.ts.checkpoint('Move projection');
-      else { this.queueLayerThumbs(); this.buildProperties(); }
-    });
-    tc.addEventListener('objectChange', () => { this.projFromObj(); this.ts.markDirty(); this.modified = true; this.poke(); });
-    // Shift: move / rotate / scale in steps (like Substance's manipulator settings).
-    const snap = (e: KeyboardEvent) => {
-      const rad = this.ts.shapeFrame(layer.xf as unknown as GenSettings).rad;
-      tc.setTranslationSnap(e.shiftKey ? rad * 0.05 : null);
-      tc.setRotationSnap(e.shiftKey ? THREE.MathUtils.degToRad(15) : null);
-      tc.setScaleSnap(e.shiftKey ? 0.1 : null);
-    };
-    window.addEventListener('keydown', snap); window.addEventListener('keyup', snap);
-    this.pj = { tc, obj, helper, layer, snap };
-    this.projToObj();
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg') as SVGSVGElement;
+    svg.id = 'proj-gizmo';
+    const mk = (tag: string, attrs: Record<string, string>) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); svg.append(e); return e; };
+    mk('polygon', { class: 'pg-shadow' });
+    mk('polygon', { class: 'pg-box', 'data-h': 'move' });
+    mk('line', { class: 'pg-rotline' });
+    mk('line', { class: 'pg-ax pg-x', 'data-h': 'mx' }); mk('line', { class: 'pg-ax pg-y', 'data-h': 'my' });
+    mk('rect', { class: 'pg-end pg-x', 'data-h': 'sx', width: '11', height: '11' }); mk('rect', { class: 'pg-end pg-y', 'data-h': 'sy', width: '11', height: '11' });
+    mk('rect', { class: 'pg-mid', 'data-h': 'move', width: '14', height: '14' });
+    for (const h of ['c00', 'c10', 'c11', 'c01', 'e0y', 'e1y', 'ex0', 'ex1']) mk('rect', { class: 'pg-h', 'data-h': h, width: '9', height: '9' });
+    mk('circle', { class: 'pg-rot', 'data-h': 'rot', r: '6' });
+    document.body.append(svg);
+    this.pj = { layer, svg, raf: 0, hover: '' };
+    svg.addEventListener('pointerdown', (e) => this.projDrag(e));
+    const tick = () => { if (!this.pj || this.pj.svg !== svg) return; this.drawProjGizmo(); this.pj.raf = requestAnimationFrame(tick); };
+    tick();
     this.buildToolbar();
     this.poke();
   }
@@ -5177,42 +5178,150 @@ class App {
   private closeProjGizmo() {
     const pj = this.pj;
     if (!pj) return;
-    window.removeEventListener('keydown', pj.snap); window.removeEventListener('keyup', pj.snap);
-    pj.tc.detach(); pj.tc.dispose();
-    this.vp.scene.remove(pj.obj); this.vp.scene.remove(pj.helper);
-    pj.obj.traverse((o) => { const m = o as THREE.LineSegments; m.geometry?.dispose(); (m.material as THREE.Material | undefined)?.dispose?.(); });
+    cancelAnimationFrame(pj.raf);
+    pj.svg.remove();
     this.pj = null;
     this.vp.controls.enabled = true;
     this.poke();
   }
 
-  /** Projection settings → the manipulated object (position, orientation, size). */
-  private projToObj() {
+  /** The projection rectangle on screen. */
+  private projScreen() {
     const pj = this.pj;
-    if (!pj) return;
+    if (!pj || this.layout3 === '2d') return null;
     const f = this.ts.shapeFrame(pj.layer.xf as unknown as GenSettings);
-    pj.obj.position.copy(f.at);
-    pj.obj.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(f.u, f.v, f.n));
-    pj.obj.scale.set(2 * f.hx, 2 * f.hy, 2 * Math.max(f.hx, f.hy));
+    const at = (x: number, y: number) => this.toScreen(f.at.clone().addScaledVector(f.u, x * f.hx).addScaledVector(f.v, y * f.hy));
+    const c = this.toScreen(f.at);
+    const pts = [at(-1, -1), at(1, -1), at(1, 1), at(-1, 1)];
+    if (!c || pts.some((q) => !q)) return null;
+    // Screen directions of the projection's X and Y, for the gizmo arrows (fixed length on screen).
+    const ux = at(1, 0)!, vy = at(0, 1)!;
+    const dir = (p: { x: number; y: number }) => { const dx = p.x - c.x, dy = p.y - c.y, l = Math.hypot(dx, dy) || 1; return { x: dx / l, y: dy / l }; };
+    return { f, c, pts: pts as { x: number; y: number }[], du: dir(ux), dv: dir(vy), mid: { e0y: at(0, -1)!, e1y: at(0, 1)!, ex0: at(-1, 0)!, ex1: at(1, 0)!, top: at(0, 1)! } };
   }
 
-  /** The manipulated object → projection settings. */
-  private projFromObj() {
+  private drawProjGizmo() {
+    const pj = this.pj, svg = pj?.svg;
+    if (!pj || !svg) return;
+    const s = this.projScreen();
+    svg.style.display = s ? 'block' : 'none';
+    if (!s) return;
+    const q = (sel: string) => svg.querySelector(sel) as SVGElement;
+    const poly = s.pts.map((p) => `${p.x},${p.y}`).join(' ');
+    q('.pg-box').setAttribute('points', poly);
+    q('.pg-shadow').setAttribute('points', poly);
+    const L = 64;
+    const xe = { x: s.c.x + s.du.x * L, y: s.c.y + s.du.y * L }, ye = { x: s.c.x + s.dv.x * L, y: s.c.y + s.dv.y * L };
+    const line = (sel: string, a: { x: number; y: number }, b: { x: number; y: number }) => { const e = q(sel); e.setAttribute('x1', `${a.x}`); e.setAttribute('y1', `${a.y}`); e.setAttribute('x2', `${b.x}`); e.setAttribute('y2', `${b.y}`); };
+    const box = (e: Element, p: { x: number; y: number }, w: number) => { e.setAttribute('x', `${p.x - w / 2}`); e.setAttribute('y', `${p.y - w / 2}`); };
+    line('.pg-ax.pg-x', s.c, xe); line('.pg-ax.pg-y', s.c, ye);
+    box(q('.pg-end.pg-x'), xe, 11); box(q('.pg-end.pg-y'), ye, 11); box(q('.pg-mid'), s.c, 14);
+    const hs = svg.querySelectorAll('.pg-h');
+    const spots: Record<string, { x: number; y: number }> = { c00: s.pts[0], c10: s.pts[1], c11: s.pts[2], c01: s.pts[3], ...s.mid };
+    hs.forEach((e) => box(e, spots[e.getAttribute('data-h')!], 9));
+    // Turn handle: beyond the top edge, away from the centre.
+    const t = s.mid.top, dx = t.x - s.c.x, dy = t.y - s.c.y, l = Math.hypot(dx, dy) || 1;
+    const rp = { x: t.x + (dx / l) * 26, y: t.y + (dy / l) * 26 };
+    line('.pg-rotline', t, rp);
+    q('.pg-rot').setAttribute('cx', `${rp.x}`); q('.pg-rot').setAttribute('cy', `${rp.y}`);
+    svg.querySelectorAll('[data-h]').forEach((e) => e.classList.toggle('hot', e.getAttribute('data-h') === pj.hover));
+  }
+
+  /** Where the cursor ray meets the projection's plane, in its own (x, y) units, or null when the plane is edge-on. */
+  private projPlaneAt(cx: number, cy: number, f: { at: THREE.Vector3; n: THREE.Vector3; u: THREE.Vector3; v: THREE.Vector3 }) {
+    const r = this.vp.canvas.getBoundingClientRect(), g = this.vp.region;
+    const ndc = new THREE.Vector2(((cx - r.left - g.x) / g.w) * 2 - 1, -(((cy - r.top - g.y) / g.h) * 2 - 1));
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(ndc, this.vp.camera);
+    const denom = ray.ray.direction.dot(f.n);
+    if (Math.abs(denom) < 1e-4) return null;
+    const t = f.at.clone().sub(ray.ray.origin).dot(f.n) / denom;
+    const p = ray.ray.origin.clone().addScaledVector(ray.ray.direction, t);
+    const d = p.sub(f.at);
+    return { x: d.dot(f.u), y: d.dot(f.v) };
+  }
+
+  private projDrag(e: PointerEvent) {
+    const pj = this.pj;
+    const h = (e.target as Element).getAttribute?.('data-h');
+    if (!pj || !h || e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    const xf = (pj.layer.xf ??= { ...DEFAULT_XF });
+    const f0 = this.ts.shapeFrame(xf as unknown as GenSettings);
+    const p0 = this.projPlaneAt(e.clientX, e.clientY, f0);
+    if (!p0) return;
+    this.ts.checkpoint(h === 'rot' ? 'Turn projection' : h.startsWith('m') || h === 'move' ? 'Move projection' : 'Resize projection');
+    this.vp.controls.enabled = false;
+    pj.hover = h;
+    const rad = f0.rad, minH = rad * 0.004;
+    const rot0 = xf.shapeRot ?? 0;
+    const set = (cx: number, cy: number, hx: number, hy: number) => {
+      // New centre (in the starting plane's x / y) and half sizes back into the layer's settings.
+      const c = f0.at.clone().addScaledVector(f0.u, cx).addScaledVector(f0.v, cy);
+      xf.shapeAt = c.toArray() as [number, number, number];
+      hx = Math.max(minH, hx); hy = Math.max(minH, hy);
+      xf.shapeSize = hy / rad;
+      xf.shapeAspect = hx / hy;
+    };
+    const move = (ev: PointerEvent) => {
+      const p = this.projPlaneAt(ev.clientX, ev.clientY, f0);
+      if (!p) return;
+      const dx = p.x - p0.x, dy = p.y - p0.y;
+      let { hx, hy } = f0;
+      if (h === 'move') set(dx, dy, hx, hy);
+      else if (h === 'mx') set(dx, 0, hx, hy);
+      else if (h === 'my') set(0, dy, hx, hy);
+      else if (h === 'sx' || h === 'sy') {
+        // Stretch around the centre: the square end follows the cursor.
+        if (h === 'sx') hx = Math.abs(p.x) * (hx / Math.max(1e-6, Math.abs(p0.x)));
+        else hy = Math.abs(p.y) * (hy / Math.max(1e-6, Math.abs(p0.y)));
+        set(0, 0, hx, hy);
+      } else if (h === 'rot') {
+        const a0 = Math.atan2(p0.y, p0.x), a = Math.atan2(p.y, p.x);
+        let r = rot0 + ((a - a0) * 180) / Math.PI;
+        if (ev.shiftKey) r = Math.round(r / 15) * 15;
+        xf.shapeRot = ((r + 540) % 360) - 180;
+      } else {
+        // Corner / edge: the opposite side stays put. Shift keeps the shape (corners).
+        const sx = h === 'c10' || h === 'c11' || h === 'ex1' ? 1 : h === 'c00' || h === 'c01' || h === 'ex0' ? -1 : 0;
+        const sy = h === 'c11' || h === 'c01' || h === 'e1y' ? 1 : h === 'c00' || h === 'c10' || h === 'e0y' ? -1 : 0;
+        let x0 = -hx, x1 = hx, y0 = -hy, y1 = hy;
+        if (sx > 0) x1 = Math.max(x0 + 2 * minH, hx + dx); else if (sx < 0) x0 = Math.min(x1 - 2 * minH, -hx + dx);
+        if (sy > 0) y1 = Math.max(y0 + 2 * minH, hy + dy); else if (sy < 0) y0 = Math.min(y1 - 2 * minH, -hy + dy);
+        let nhx = (x1 - x0) / 2, nhy = (y1 - y0) / 2;
+        if (ev.shiftKey && sx && sy) {
+          const k = Math.max(nhx / hx, nhy / hy);
+          nhx = hx * k; nhy = hy * k;
+          if (sx > 0) x1 = x0 + 2 * nhx; else x0 = x1 - 2 * nhx;
+          if (sy > 0) y1 = y0 + 2 * nhy; else y0 = y1 - 2 * nhy;
+        }
+        set((x0 + x1) / 2, (y0 + y1) / 2, nhx, nhy);
+      }
+      this.ts.markDirty(); this.modified = true; this.poke();
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
+      this.vp.controls.enabled = true;
+      if (this.pj) this.pj.hover = '';
+      this.queueLayerThumbs(); this.buildProperties();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
+
+  /** Aim the projection straight at the camera again (keeps its centre and size). */
+  private faceCamera() {
     const pj = this.pj;
     if (!pj) return;
     const xf = (pj.layer.xf ??= { ...DEFAULT_XF });
-    const q = pj.obj.quaternion;
-    const u = new THREE.Vector3(1, 0, 0).applyQuaternion(q), n = new THREE.Vector3(0, 0, 1).applyQuaternion(q);
-    const ref = Math.abs(n.y) < 0.95 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
-    const u0 = new THREE.Vector3().crossVectors(ref, n).normalize(), v0 = new THREE.Vector3().crossVectors(n, u0);
-    const rad = this.ts.shapeFrame(xf as unknown as GenSettings).rad;
-    const sx = Math.max(1e-4, Math.abs(pj.obj.scale.x)), sy = Math.max(1e-4, Math.abs(pj.obj.scale.y));
-    xf.shapeAt = pj.obj.position.toArray() as [number, number, number];
-    xf.shapeNormal = n.toArray() as [number, number, number];
-    xf.shapeRot = THREE.MathUtils.radToDeg(Math.atan2(u.dot(v0), u.dot(u0)));
-    xf.shapeSize = sy / 2 / rad;
-    xf.shapeAspect = sx / sy;
+    this.ts.checkpoint('Projection faces the camera');
+    const f = this.ts.shapeFrame(xf as unknown as GenSettings);
+    xf.shapeNormal = this.vp.camera.position.clone().sub(f.at).normalize().toArray() as [number, number, number];
+    xf.shapeRot = 0;
+    this.ts.markDirty(); this.modified = true; this.poke(); this.buildProperties();
   }
+  private projToObj() { /* the on-screen box redraws itself every frame */ }
 
   private resetProjection() {
     const pj = this.pj;
@@ -5221,7 +5330,6 @@ class App {
     const xf = pj.layer.xf!;
     delete xf.shapeAt; xf.shapeSize = 0.3; xf.shapeRot = 0; delete xf.shapeAspect;
     this.placeProjectionAtView(pj.layer);
-    this.projToObj();
     this.ts.markDirty(); this.modified = true; this.poke(); this.buildProperties();
   }
 
@@ -5305,7 +5413,7 @@ class App {
     // Projected images get Substance's 3D manipulator (move / rotate / scale per axis); shapes keep the on-screen handles.
     this.showGizmo(!!this.shapeMove && !fill);
     if (this.shapeMove && fill) this.openProjGizmo(layer as FillLayer); else this.closeProjGizmo();
-    if (this.shapeMove) toast(fill ? 'Drag the arrows to move, the rings to rotate, the cubes to stretch (W / E / R switch). Drag on the model to stick it to the surface. Shift snaps. Esc when done.' : 'Drag on the model to move the shape. Esc when done.');
+    if (this.shapeMove) toast(fill ? 'Drag inside the box to move it, corners and edges to resize, the round handle to turn. Esc when done.' : 'Drag on the model to move the shape. Esc when done.');
     this.buildToolbar(); this.buildProperties();
   }
   private moveShapeTo(x: number, y: number) {
@@ -6755,7 +6863,7 @@ class App {
     const moving = this.shapeMove?.g === (fill.xf as unknown as GenSettings);
     const planarRows = x.proj === 'planar' ? [
       el('div', { class: 'row' }, el('button', { class: 'grow' + (moving ? ' on' : ''), onclick: () => this.toggleShapeMove(fill, xf() as unknown as GenSettings, true) },
-        moving ? 'Done (Esc)' : 'Edit in the viewport (move / rotate / scale)')),
+        moving ? 'Done (Esc)' : 'Edit in the viewport (move / resize / turn)')),
       slider('Size', { min: 0.02, max: 4, step: 0.01, value: x.shapeSize ?? 0.3, fmt: (v) => v.toFixed(2), onInput: (v) => { pre('pjsize'); xf().shapeSize = v; live(); this.projToObj(); } }).el,
       slider('Width / height', { min: 0.1, max: 10, step: 0.01, value: x.shapeAspect ?? 1, fmt: (v) => v.toFixed(2), onInput: (v) => { pre('pjasp'); xf().shapeAspect = v; live(); this.projToObj(); } }).el,
       slider('Turn', { min: -180, max: 180, step: 1, value: x.shapeRot ?? 0, fmt: (v) => `${v.toFixed(0)}°`, onInput: (v) => { pre('pjrot'); xf().shapeRot = v; live(); this.projToObj(); } }).el,

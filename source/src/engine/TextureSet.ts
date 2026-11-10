@@ -2382,7 +2382,9 @@ void main() {
           u.pjH.value.set(f.hx, f.hy);
           u.pjTile.value = !!lxf.tile; u.pjBack.value = lxf.hideBack !== false;
         }
-        if (cimg && lxf.useAlpha !== false && ch !== 'color') { u.useAlphaTex.value = true; u.alphaTex.value = cimg.tex; }
+        // Transparent pictures cut out the layer: the colour image's alpha, or this channel's own image when it's the only one.
+        const atex = cimg ?? (lxf.proj === 'planar' ? img : undefined);
+        if (atex && lxf.useAlpha !== false && (ch !== 'color' || !cimg)) { u.useAlphaTex.value = true; u.alphaTex.value = atex.tex; }
         if (ch === 'color' && img && lxf.useAlpha !== false) u.texAlpha.value = true;
         const pr = !img && ch !== 'normal' ? l.procs?.[ch] : undefined;
         if (pr) {

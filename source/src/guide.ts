@@ -67,6 +67,12 @@ export const GUIDES: Guide[] = [
     sum: 'What LocalPaint can do in this version.',
     tags: ['new', 'update', 'version', 'changelog'], words: 'changes release notes added features latest',
     body: [
+      { h: 'New in v1.29', steps: [
+        'Projecting pictures works like Substance now: a dashed box with green corner and edge handles to resize, red / green arrows to slide and stretch, a round handle to turn, and dragging inside the box to move it. The picture follows the cursor exactly.',
+        'Dropping a picture on the model asks which channel it goes into: Base color, Height, Metallic, Normal, Roughness or Emissive.',
+        'Clicking the model while placing a picture no longer makes it jump.',
+        'Transparent pictures also cut out when they go into Height, Roughness or another single channel.',
+      ] },
       { h: 'New in v1.28', steps: [
         'File > Reimport mesh: changed the model in Blender? Load it again without starting over. Your layers stay, and texture sets are matched by material name.',
         'In the desktop app it remembers where the mesh file is, so Reload this file is one click. Pick another file works too.',
@@ -692,13 +698,13 @@ export const GUIDES: Guide[] = [
         'It lands where you dropped it, facing you, on a new fill layer, with a box and a manipulator on it.',
         'Press Esc (or Done) when it\'s where you want it. To change it later, select the layer and click "Edit in the viewport" under Projection in Properties.',
       ] },
-      { h: 'The manipulator', steps: [
-        'Move (W): drag an arrow to slide along that axis, or a coloured square to slide on that plane.',
-        'Rotate (E): drag a ring to turn around that axis. The blue ring spins the picture in place; red and green tilt it.',
-        'Scale (R): drag a cube to stretch along one axis (red = width, green = height), or the middle to scale it all.',
-        'Drag on the model itself (not on a handle) to stick the projection to the surface under the cursor, facing out from it.',
-        'Hold Shift while dragging to move, turn (15°) and scale in steps.',
-        'Local / World in the top bar choose whether the axes follow the projection or the scene. Reset puts it back facing you in the middle of the view.',
+      { h: 'The projection box', steps: [
+        'When you drop a picture on the model, pick which channel it goes into: Base color, Height, Metallic, Normal, Roughness or Emissive.',
+        'A dashed box shows where the picture lands. Drag inside it (or the middle square) to move it.',
+        'Drag a green corner to resize; the opposite corner stays put. Hold Shift to keep the shape. Drag a green edge handle to stretch one side.',
+        'The red and green arrows in the middle: drag the line to slide that way only, drag the square at the end to stretch that way around the centre.',
+        'Drag the round handle above the box to turn the picture. Hold Shift for 15° steps.',
+        'Face camera points it straight at your view again; Reset also moves it back to the middle at the default size.',
       ] },
       { h: 'Transparent pictures', p: 'PNGs with a transparent background stay transparent: only the picture shows, on every channel of the layer. Untick "Use the image\'s transparency" in Properties to use the whole rectangle.' },
       { h: 'Settings (Properties > Projection)', steps: [
